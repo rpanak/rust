@@ -20,7 +20,7 @@ use ptr::P;
 pub fn expand_deriving_clone(cx: &mut ExtCtxt,
                              span: Span,
                              mitem: &MetaItem,
-                             item: Annotatable,
+                             item: &Annotatable,
                              push: &mut FnMut(Annotatable))
 {
     let inline = cx.meta_word(span, InternedString::new("inline"));
@@ -31,6 +31,7 @@ pub fn expand_deriving_clone(cx: &mut ExtCtxt,
         path: path_std!(cx, core::clone::Clone),
         additional_bounds: Vec::new(),
         generics: LifetimeBounds::empty(),
+        is_unsafe: false,
         methods: vec!(
             MethodDef {
                 name: "clone",
@@ -48,7 +49,7 @@ pub fn expand_deriving_clone(cx: &mut ExtCtxt,
         associated_types: Vec::new(),
     };
 
-    trait_def.expand(cx, mitem, &item, push)
+    trait_def.expand(cx, mitem, item, push)
 }
 
 fn cs_clone(
@@ -57,12 +58,7 @@ fn cs_clone(
     substr: &Substructure) -> P<Expr> {
     let ctor_path;
     let all_fields;
-    let fn_path = vec![
-        cx.ident_of_std("core"),
-        cx.ident_of("clone"),
-        cx.ident_of("Clone"),
-        cx.ident_of("clone"),
-    ];
+    let fn_path = cx.std_path(&["clone", "Clone", "clone"]);
     let subcall = |field: &FieldInfo| {
         let args = vec![cx.expr_addr_of(field.span, field.self_.clone())];
 

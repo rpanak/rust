@@ -212,7 +212,6 @@
 //! no means all of the necessary details. Take a look at the rest of
 //! metadata::loader or metadata::creader for all the juicy details!
 
-use back::archive::METADATA_FILENAME;
 use back::svh::Svh;
 use session::Session;
 use session::search_paths::PathKind;
@@ -280,6 +279,8 @@ pub struct CratePaths {
     pub rlib: Option<PathBuf>
 }
 
+pub const METADATA_FILENAME: &'static str = "rust.metadata.bin";
+
 impl CratePaths {
     fn paths(&self) -> Vec<PathBuf> {
         match (&self.dylib, &self.rlib) {
@@ -307,23 +308,28 @@ impl<'a> Context<'a> {
     }
 
     pub fn report_load_errs(&mut self) {
-        let message = if !self.rejected_via_hash.is_empty() {
-            format!("found possibly newer version of crate `{}`",
-                    self.ident)
+        let add = match self.root {
+            &None => String::new(),
+            &Some(ref r) => format!(" which `{}` depends on",
+                                    r.ident)
+        };
+        if !self.rejected_via_hash.is_empty() {
+            span_err!(self.sess, self.span, E0460,
+                      "found possibly newer version of crate `{}`{}",
+                      self.ident, add);
         } else if !self.rejected_via_triple.is_empty() {
-            format!("couldn't find crate `{}` with expected target triple {}",
-                    self.ident, self.triple)
+            span_err!(self.sess, self.span, E0461,
+                      "couldn't find crate `{}` with expected target triple {}{}",
+                      self.ident, self.triple, add);
         } else if !self.rejected_via_kind.is_empty() {
-            format!("found staticlib `{}` instead of rlib or dylib", self.ident)
+            span_err!(self.sess, self.span, E0462,
+                      "found staticlib `{}` instead of rlib or dylib{}",
+                      self.ident, add);
         } else {
-            format!("can't find crate for `{}`", self.ident)
-        };
-        let message = match self.root {
-            &None => message,
-            &Some(ref r) => format!("{} which `{}` depends on",
-                                    message, r.ident)
-        };
-        self.sess.span_err(self.span, &message[..]);
+            span_err!(self.sess, self.span, E0463,
+                      "can't find crate for `{}`{}",
+                      self.ident, add);
+        }
 
         if !self.rejected_via_triple.is_empty() {
             let mismatches = self.rejected_via_triple.iter();
@@ -429,15 +435,16 @@ impl<'a> Context<'a> {
             let slot = candidates.entry(hash_str)
                                  .or_insert_with(|| (HashMap::new(), HashMap::new()));
             let (ref mut rlibs, ref mut dylibs) = *slot;
-            if rlib {
-                rlibs.insert(fs::canonicalize(path).unwrap(), kind);
-            } else {
-                dylibs.insert(fs::canonicalize(path).unwrap(), kind);
-            }
-
-            FileMatches
+            fs::canonicalize(path).map(|p| {
+                if rlib {
+                    rlibs.insert(p, kind);
+                } else {
+                    dylibs.insert(p, kind);
+                }
+                FileMatches
+            }).unwrap_or(FileDoesntMatch)
         });
-        self.rejected_via_kind.extend(staticlibs.into_iter());
+        self.rejected_via_kind.extend(staticlibs);
 
         // We have now collected all known libraries into a set of candidates
         // keyed of the filename hash listed. For each filename, we also have a
@@ -471,9 +478,9 @@ impl<'a> Context<'a> {
             0 => None,
             1 => Some(libraries.into_iter().next().unwrap()),
             _ => {
-                self.sess.span_err(self.span,
-                    &format!("multiple matching crates for `{}`",
-                            self.crate_name));
+                span_err!(self.sess, self.span, E0464,
+                          "multiple matching crates for `{}`",
+                          self.crate_name);
                 self.sess.note("candidates:");
                 for lib in &libraries {
                     match lib.dylib {
@@ -526,8 +533,7 @@ impl<'a> Context<'a> {
 
         for (lib, kind) in m {
             info!("{} reading metadata from: {}", flavor, lib.display());
-            let metadata = match get_metadata_section(self.target.options.is_like_osx,
-                                                      &lib) {
+            let metadata = match get_metadata_section(self.target, &lib) {
                 Ok(blob) => {
                     if self.crate_matches(blob.as_slice(), &lib) {
                         blob
@@ -536,17 +542,20 @@ impl<'a> Context<'a> {
                         continue
                     }
                 }
-                Err(_) => {
-                    info!("no metadata found");
+                Err(err) => {
+                    info!("no metadata found: {}", err);
                     continue
                 }
             };
-            if ret.is_some() {
-                self.sess.span_err(self.span,
-                                   &format!("multiple {} candidates for `{}` \
-                                            found",
-                                           flavor,
-                                           self.crate_name));
+            // If we've already found a candidate and we're not matching hashes,
+            // emit an error about duplicate candidates found. If we're matching
+            // based on a hash, however, then if we've gotten this far both
+            // candidates have the same hash, so they're not actually
+            // duplicates that we should warn about.
+            if ret.is_some() && self.hash.is_none() {
+                span_err!(self.sess, self.span, E0465,
+                          "multiple {} candidates for `{}` found",
+                          flavor, self.crate_name);
                 self.sess.span_note(self.span,
                                     &format!(r"candidate #1: {}",
                                             ret.as_ref().unwrap().0
@@ -715,16 +724,18 @@ impl ArchiveMetadata {
 }
 
 // Just a small wrapper to time how long reading metadata takes.
-fn get_metadata_section(is_osx: bool, filename: &Path) -> Result<MetadataBlob, String> {
+fn get_metadata_section(target: &Target, filename: &Path)
+                        -> Result<MetadataBlob, String> {
     let mut ret = None;
     let dur = Duration::span(|| {
-        ret = Some(get_metadata_section_imp(is_osx, filename));
+        ret = Some(get_metadata_section_imp(target, filename));
     });
-    info!("reading {:?} => {}", filename.file_name().unwrap(), dur);
-    return ret.unwrap();;
+    info!("reading {:?} => {:?}", filename.file_name().unwrap(), dur);
+    ret.unwrap()
 }
 
-fn get_metadata_section_imp(is_osx: bool, filename: &Path) -> Result<MetadataBlob, String> {
+fn get_metadata_section_imp(target: &Target, filename: &Path)
+                            -> Result<MetadataBlob, String> {
     if !filename.exists() {
         return Err(format!("no such file: '{}'", filename.display()));
     }
@@ -768,7 +779,7 @@ fn get_metadata_section_imp(is_osx: bool, filename: &Path) -> Result<MetadataBlo
                                              name_len as usize).to_vec();
             let name = String::from_utf8(name).unwrap();
             debug!("get_metadata_section: name {}", name);
-            if read_meta_section_name(is_osx) == name {
+            if read_meta_section_name(target) == name {
                 let cbuf = llvm::LLVMGetSectionContents(si.llsi);
                 let csz = llvm::LLVMGetSectionSize(si.llsi) as usize;
                 let cvbuf: *const u8 = cbuf as *const u8;
@@ -798,26 +809,41 @@ fn get_metadata_section_imp(is_osx: bool, filename: &Path) -> Result<MetadataBlo
     }
 }
 
-pub fn meta_section_name(is_osx: bool) -> &'static str {
-    if is_osx {
+pub fn meta_section_name(target: &Target) -> &'static str {
+    if target.options.is_like_osx {
         "__DATA,__note.rustc"
+    } else if target.options.is_like_msvc {
+        // When using link.exe it was seen that the section name `.note.rustc`
+        // was getting shortened to `.note.ru`, and according to the PE and COFF
+        // specification:
+        //
+        // > Executable images do not use a string table and do not support
+        // > section names longer than 8 characters
+        //
+        // https://msdn.microsoft.com/en-us/library/windows/hardware/gg463119.aspx
+        //
+        // As a result, we choose a slightly shorter name! As to why
+        // `.note.rustc` works on MinGW, that's another good question...
+        ".rustc"
     } else {
         ".note.rustc"
     }
 }
 
-pub fn read_meta_section_name(is_osx: bool) -> &'static str {
-    if is_osx {
+pub fn read_meta_section_name(target: &Target) -> &'static str {
+    if target.options.is_like_osx {
         "__note.rustc"
+    } else if target.options.is_like_msvc {
+        ".rustc"
     } else {
         ".note.rustc"
     }
 }
 
 // A diagnostic function for dumping crate metadata to an output stream
-pub fn list_file_metadata(is_osx: bool, path: &Path,
+pub fn list_file_metadata(target: &Target, path: &Path,
                           out: &mut io::Write) -> io::Result<()> {
-    match get_metadata_section(is_osx, path) {
+    match get_metadata_section(target, path) {
         Ok(bytes) => decoder::list_crate_metadata(bytes.as_slice(), out),
         Err(msg) => {
             write!(out, "{}\n", msg)

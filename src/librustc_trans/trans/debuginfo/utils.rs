@@ -13,6 +13,8 @@
 use super::{FunctionDebugContext, CrateDebugContext};
 use super::namespace::namespace_for_item;
 
+use middle::def_id::DefId;
+
 use llvm;
 use llvm::debuginfo::{DIScope, DIBuilderRef, DIDescriptor, DIArray};
 use trans::machine;
@@ -94,15 +96,12 @@ pub fn assert_type_for_node_id(cx: &CrateContext,
     }
 }
 
-pub fn get_namespace_and_span_for_item(cx: &CrateContext, def_id: ast::DefId)
+pub fn get_namespace_and_span_for_item(cx: &CrateContext, def_id: DefId)
                                    -> (DIScope, Span) {
     let containing_scope = namespace_for_item(cx, def_id).scope;
-    let definition_span = if def_id.krate == ast::LOCAL_CRATE {
-        cx.tcx().map.span(def_id.node)
-    } else {
-        // For external items there is no span information
-        codemap::DUMMY_SP
-    };
+    let definition_span = cx.tcx().map.def_id_span(def_id, codemap::DUMMY_SP /* (1) */ );
+
+    // (1) For external items there is no span information
 
     (containing_scope, definition_span)
 }

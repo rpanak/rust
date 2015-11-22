@@ -12,6 +12,7 @@ use self::ImportDirectiveSubclass::*;
 
 use DefModifiers;
 use Module;
+use ModuleKind;
 use Namespace::{self, TypeNS, ValueNS};
 use NameBindings;
 use NamespaceResult::{BoundResult, UnboundResult, UnknownResult};
@@ -21,15 +22,16 @@ use ResolveResult;
 use Resolver;
 use UseLexicalScopeFlag;
 use {names_to_string, module_to_string};
+use {resolve_error, ResolutionError};
 
 use build_reduced_graph;
 
 use rustc::middle::def::*;
+use rustc::middle::def_id::DefId;
 use rustc::middle::privacy::*;
 
-use syntax::ast::{DefId, NodeId, Name};
+use syntax::ast::{NodeId, Name};
 use syntax::attr::AttrMetaMethods;
-use syntax::parse::token;
 use syntax::codemap::Span;
 
 use std::mem::replace;
@@ -40,14 +42,14 @@ use std::rc::Rc;
 #[derive(Copy, Clone,Debug)]
 pub enum ImportDirectiveSubclass {
     SingleImport(Name /* target */, Name /* source */),
-    GlobImport
+    GlobImport,
 }
 
 /// Whether an import can be shadowed by another import.
 #[derive(Debug,PartialEq,Clone,Copy)]
 pub enum Shadowable {
     Always,
-    Never
+    Never,
 }
 
 /// One import directive.
@@ -62,13 +64,13 @@ pub struct ImportDirective {
 }
 
 impl ImportDirective {
-    pub fn new(module_path: Vec<Name> ,
-           subclass: ImportDirectiveSubclass,
-           span: Span,
-           id: NodeId,
-           is_public: bool,
-           shadowable: Shadowable)
-           -> ImportDirective {
+    pub fn new(module_path: Vec<Name>,
+               subclass: ImportDirectiveSubclass,
+               span: Span,
+               id: NodeId,
+               is_public: bool,
+               shadowable: Shadowable)
+               -> ImportDirective {
         ImportDirective {
             module_path: module_path,
             subclass: subclass,
@@ -90,9 +92,9 @@ pub struct Target {
 
 impl Target {
     pub fn new(target_module: Rc<Module>,
-           bindings: Rc<NameBindings>,
-           shadowable: Shadowable)
-           -> Target {
+               bindings: Rc<NameBindings>,
+               shadowable: Shadowable)
+               -> Target {
         Target {
             target_module: target_module,
             bindings: bindings,
@@ -142,17 +144,16 @@ impl ImportResolution {
         }
     }
 
-    pub fn target_for_namespace(&self, namespace: Namespace)
-                                -> Option<Target> {
+    pub fn target_for_namespace(&self, namespace: Namespace) -> Option<Target> {
         match namespace {
-            TypeNS  => self.type_target.clone(),
+            TypeNS => self.type_target.clone(),
             ValueNS => self.value_target.clone(),
         }
     }
 
     pub fn id(&self, namespace: Namespace) -> NodeId {
         match namespace {
-            TypeNS  => self.type_id,
+            TypeNS => self.type_id,
             ValueNS => self.value_id,
         }
     }
@@ -166,12 +167,9 @@ impl ImportResolution {
         target.unwrap().shadowable
     }
 
-    pub fn set_target_and_id(&mut self,
-                         namespace: Namespace,
-                         target: Option<Target>,
-                         id: NodeId) {
+    pub fn set_target_and_id(&mut self, namespace: Namespace, target: Option<Target>, id: NodeId) {
         match namespace {
-            TypeNS  => {
+            TypeNS => {
                 self.type_target = target;
                 self.type_id = id;
             }
@@ -183,9 +181,14 @@ impl ImportResolution {
     }
 }
 
+struct ImportResolvingError {
+    span: Span,
+    path: String,
+    help: String,
+}
 
-struct ImportResolver<'a, 'b:'a, 'tcx:'b> {
-    resolver: &'a mut Resolver<'b, 'tcx>
+struct ImportResolver<'a, 'b: 'a, 'tcx: 'b> {
+    resolver: &'a mut Resolver<'b, 'tcx>,
 }
 
 impl<'a, 'b:'a, 'tcx:'b> ImportResolver<'a, 'b, 'tcx> {
@@ -204,10 +207,11 @@ impl<'a, 'b:'a, 'tcx:'b> ImportResolver<'a, 'b, 'tcx> {
         let mut prev_unresolved_imports = 0;
         loop {
             debug!("(resolving imports) iteration {}, {} imports left",
-                   i, self.resolver.unresolved_imports);
+                   i,
+                   self.resolver.unresolved_imports);
 
             let module_root = self.resolver.graph_root.get_module();
-            self.resolve_imports_for_module_subtree(module_root.clone());
+            let errors = self.resolve_imports_for_module_subtree(module_root.clone());
 
             if self.resolver.unresolved_imports == 0 {
                 debug!("(resolving imports) success");
@@ -215,7 +219,20 @@ impl<'a, 'b:'a, 'tcx:'b> ImportResolver<'a, 'b, 'tcx> {
             }
 
             if self.resolver.unresolved_imports == prev_unresolved_imports {
-                self.resolver.report_unresolved_imports(module_root);
+                // resolving failed
+                if errors.len() > 0 {
+                    for e in errors {
+                        resolve_error(self.resolver,
+                                      e.span,
+                                      ResolutionError::UnresolvedImport(Some((&e.path, &e.help))));
+                    }
+                } else {
+                    // Report unresolved imports only if no hard error was already reported
+                    // to avoid generating multiple errors on the same import.
+                    // Imports that are still indeterminate at this point are actually blocked
+                    // by errored imports, so there is no point reporting them.
+                    self.resolver.report_unresolved_imports(module_root);
+                }
                 break;
             }
 
@@ -226,65 +243,80 @@ impl<'a, 'b:'a, 'tcx:'b> ImportResolver<'a, 'b, 'tcx> {
 
     /// Attempts to resolve imports for the given module and all of its
     /// submodules.
-    fn resolve_imports_for_module_subtree(&mut self, module_: Rc<Module>) {
+    fn resolve_imports_for_module_subtree(&mut self,
+                                          module_: Rc<Module>)
+                                          -> Vec<ImportResolvingError> {
+        let mut errors = Vec::new();
         debug!("(resolving imports for module subtree) resolving {}",
                module_to_string(&*module_));
         let orig_module = replace(&mut self.resolver.current_module, module_.clone());
-        self.resolve_imports_for_module(module_.clone());
+        errors.extend(self.resolve_imports_for_module(module_.clone()));
         self.resolver.current_module = orig_module;
 
         build_reduced_graph::populate_module_if_necessary(self.resolver, &module_);
-        for (_, child_node) in &*module_.children.borrow() {
+        for (_, child_node) in module_.children.borrow().iter() {
             match child_node.get_module_if_available() {
                 None => {
                     // Nothing to do.
                 }
                 Some(child_module) => {
-                    self.resolve_imports_for_module_subtree(child_module);
+                    errors.extend(self.resolve_imports_for_module_subtree(child_module));
                 }
             }
         }
 
-        for (_, child_module) in &*module_.anonymous_children.borrow() {
-            self.resolve_imports_for_module_subtree(child_module.clone());
+        for (_, child_module) in module_.anonymous_children.borrow().iter() {
+            errors.extend(self.resolve_imports_for_module_subtree(child_module.clone()));
         }
+
+        errors
     }
 
     /// Attempts to resolve imports for the given module only.
-    fn resolve_imports_for_module(&mut self, module: Rc<Module>) {
+    fn resolve_imports_for_module(&mut self, module: Rc<Module>) -> Vec<ImportResolvingError> {
+        let mut errors = Vec::new();
+
         if module.all_imports_resolved() {
-            debug!("(resolving imports for module) all imports resolved for \
-                   {}",
+            debug!("(resolving imports for module) all imports resolved for {}",
                    module_to_string(&*module));
-            return;
+            return errors;
         }
 
-        let imports = module.imports.borrow();
+        let mut imports = module.imports.borrow_mut();
         let import_count = imports.len();
-        while module.resolved_import_count.get() < import_count {
+        let mut indeterminate_imports = Vec::new();
+        while module.resolved_import_count.get() + indeterminate_imports.len() < import_count {
             let import_index = module.resolved_import_count.get();
-            let import_directive = &(*imports)[import_index];
-            match self.resolve_import_for_module(module.clone(),
-                                                 import_directive) {
+            match self.resolve_import_for_module(module.clone(), &imports[import_index]) {
                 ResolveResult::Failed(err) => {
+                    let import_directive = &imports[import_index];
                     let (span, help) = match err {
                         Some((span, msg)) => (span, format!(". {}", msg)),
-                        None => (import_directive.span, String::new())
+                        None => (import_directive.span, String::new()),
                     };
-                    let msg = format!("unresolved import `{}`{}",
-                                      import_path_to_string(
-                                          &import_directive.module_path,
-                                          import_directive.subclass),
-                                      help);
-                    self.resolver.resolve_error(span, &msg[..]);
+                    errors.push(ImportResolvingError {
+                        span: span,
+                        path: import_path_to_string(&import_directive.module_path,
+                                                    import_directive.subclass),
+                        help: help,
+                    });
                 }
-                ResolveResult::Indeterminate => break, // Bail out. We'll come around next time.
-                ResolveResult::Success(()) => () // Good. Continue.
+                ResolveResult::Indeterminate => {}
+                ResolveResult::Success(()) => {
+                    // count success
+                    module.resolved_import_count
+                          .set(module.resolved_import_count.get() + 1);
+                    continue;
+                }
             }
+            // This resolution was not successful, keep it for later
+            indeterminate_imports.push(imports.swap_remove(import_index));
 
-            module.resolved_import_count
-                  .set(module.resolved_import_count.get() + 1);
         }
+
+        imports.extend(indeterminate_imports);
+
+        errors
     }
 
     /// Attempts to resolve the given import. The return value indicates
@@ -316,7 +348,7 @@ impl<'a, 'b:'a, 'tcx:'b> ImportResolver<'a, 'b, 'tcx> {
                 ResolveResult::Failed(err) => {
                     resolution_result = ResolveResult::Failed(err);
                     None
-                },
+                }
                 ResolveResult::Indeterminate => {
                     resolution_result = ResolveResult::Indeterminate;
                     None
@@ -333,20 +365,18 @@ impl<'a, 'b:'a, 'tcx:'b> ImportResolver<'a, 'b, 'tcx> {
 
                 match import_directive.subclass {
                     SingleImport(target, source) => {
-                        resolution_result =
-                            self.resolve_single_import(&module_,
-                                                       containing_module,
-                                                       target,
-                                                       source,
-                                                       import_directive,
-                                                       lp);
+                        resolution_result = self.resolve_single_import(&module_,
+                                                                       containing_module,
+                                                                       target,
+                                                                       source,
+                                                                       import_directive,
+                                                                       lp);
                     }
                     GlobImport => {
-                        resolution_result =
-                            self.resolve_glob_import(&module_,
-                                                     containing_module,
-                                                     import_directive,
-                                                     lp);
+                        resolution_result = self.resolve_glob_import(&module_,
+                                                                     containing_module,
+                                                                     import_directive,
+                                                                     lp);
                     }
                 }
             }
@@ -364,19 +394,23 @@ impl<'a, 'b:'a, 'tcx:'b> ImportResolver<'a, 'b, 'tcx> {
         }
 
         // Decrement the count of unresolved globs if necessary. But only if
-        // the resolution result is indeterminate -- otherwise we'll stop
-        // processing imports here. (See the loop in
-        // resolve_imports_for_module).
+        // the resolution result is a success -- other cases will
+        // be handled by the main loop.
 
-        if !resolution_result.indeterminate() {
+        if resolution_result.success() {
             match import_directive.subclass {
                 GlobImport => {
-                    assert!(module_.glob_count.get() >= 1);
-                    module_.glob_count.set(module_.glob_count.get() - 1);
+                    module_.dec_glob_count();
+                    if import_directive.is_public {
+                        module_.dec_pub_glob_count();
+                    }
                 }
                 SingleImport(..) => {
                     // Ignore.
                 }
+            }
+            if import_directive.is_public {
+                module_.dec_pub_count();
             }
         }
 
@@ -391,11 +425,11 @@ impl<'a, 'b:'a, 'tcx:'b> ImportResolver<'a, 'b, 'tcx> {
                              directive: &ImportDirective,
                              lp: LastPrivate)
                              -> ResolveResult<()> {
-        debug!("(resolving single import) resolving `{}` = `{}::{}` from \
-                `{}` id {}, last private {:?}",
-               token::get_name(target),
+        debug!("(resolving single import) resolving `{}` = `{}::{}` from `{}` id {}, last \
+                private {:?}",
+               target,
                module_to_string(&*target_module),
-               token::get_name(source),
+               source,
                module_to_string(module_),
                directive.id,
                lp);
@@ -403,9 +437,9 @@ impl<'a, 'b:'a, 'tcx:'b> ImportResolver<'a, 'b, 'tcx> {
         let lp = match lp {
             LastMod(lp) => lp,
             LastImport {..} => {
-                self.resolver.session
-                    .span_bug(directive.span,
-                              "not expecting Import here, must be LastMod")
+                self.resolver
+                    .session
+                    .span_bug(directive.span, "not expecting Import here, must be LastMod")
             }
         };
 
@@ -430,8 +464,12 @@ impl<'a, 'b:'a, 'tcx:'b> ImportResolver<'a, 'b, 'tcx> {
                     value_result = BoundResult(target_module.clone(),
                                                (*child_name_bindings).clone());
                     if directive.is_public && !child_name_bindings.is_public(ValueNS) {
-                        let msg = format!("`{}` is private", token::get_name(source));
+                        let msg = format!("`{}` is private, and cannot be reexported", source);
+                        let note_msg = format!("Consider marking `{}` as `pub` in the imported \
+                                                module",
+                                               source);
                         span_err!(self.resolver.session, directive.span, E0364, "{}", &msg);
+                        self.resolver.session.span_note(directive.span, &note_msg);
                         pub_err = true;
                     }
                 }
@@ -440,8 +478,11 @@ impl<'a, 'b:'a, 'tcx:'b> ImportResolver<'a, 'b, 'tcx> {
                     type_result = BoundResult(target_module.clone(),
                                               (*child_name_bindings).clone());
                     if !pub_err && directive.is_public && !child_name_bindings.is_public(TypeNS) {
-                        let msg = format!("`{}` is private", token::get_name(source));
+                        let msg = format!("`{}` is private, and cannot be reexported", source);
+                        let note_msg = format!("Consider declaring module `{}` as a `pub mod`",
+                                               source);
                         span_err!(self.resolver.session, directive.span, E0365, "{}", &msg);
+                        self.resolver.session.span_note(directive.span, &note_msg);
                     }
                 }
             }
@@ -458,9 +499,8 @@ impl<'a, 'b:'a, 'tcx:'b> ImportResolver<'a, 'b, 'tcx> {
                 // containing module, bail out. We don't know enough to be
                 // able to resolve this import.
 
-                if target_module.glob_count.get() > 0 {
-                    debug!("(resolving single import) unresolved glob; \
-                            bailing out");
+                if target_module.pub_glob_count.get() > 0 {
+                    debug!("(resolving single import) unresolved pub glob; bailing out");
                     return ResolveResult::Indeterminate;
                 }
 
@@ -480,14 +520,13 @@ impl<'a, 'b:'a, 'tcx:'b> ImportResolver<'a, 'b, 'tcx> {
                             type_result = UnboundResult;
                         }
                     }
-                    Some(import_resolution)
-                            if import_resolution.outstanding_references == 0 => {
+                    Some(import_resolution) if import_resolution.outstanding_references == 0 => {
 
                         fn get_binding(this: &mut Resolver,
                                        import_resolution: &ImportResolution,
                                        namespace: Namespace,
-                                       source: &Name)
-                                    -> NamespaceResult {
+                                       source: Name)
+                                       -> NamespaceResult {
 
                             // Import resolutions must be declared with "pub"
                             // in order to be exported.
@@ -504,16 +543,16 @@ impl<'a, 'b:'a, 'tcx:'b> ImportResolver<'a, 'b, 'tcx> {
                                     bindings,
                                     shadowable: _
                                 }) => {
-                                    debug!("(resolving single import) found \
-                                            import in ns {:?}", namespace);
+                                    debug!("(resolving single import) found import in ns {:?}",
+                                           namespace);
                                     let id = import_resolution.id(namespace);
                                     // track used imports and extern crates as well
                                     this.used_imports.insert((id, namespace));
-                                    this.record_import_use(id, *source);
+                                    this.record_import_use(id, source);
                                     match target_module.def_id.get() {
                                         Some(DefId{krate: kid, ..}) => {
                                             this.used_crates.insert(kid);
-                                        },
+                                        }
                                         _ => {}
                                     }
                                     return BoundResult(target_module, bindings);
@@ -527,14 +566,14 @@ impl<'a, 'b:'a, 'tcx:'b> ImportResolver<'a, 'b, 'tcx> {
                             value_result = get_binding(self.resolver,
                                                        import_resolution,
                                                        ValueNS,
-                                                       &source);
+                                                       source);
                             value_used_reexport = import_resolution.is_public;
                         }
                         if type_result.is_unknown() {
                             type_result = get_binding(self.resolver,
                                                       import_resolution,
                                                       TypeNS,
-                                                      &source);
+                                                      source);
                             type_used_reexport = import_resolution.is_public;
                         }
 
@@ -552,8 +591,8 @@ impl<'a, 'b:'a, 'tcx:'b> ImportResolver<'a, 'b, 'tcx> {
                         // In this case we continue as if we resolved the import and let the
                         // check_for_conflicts_between_imports_and_items call below handle
                         // the conflict
-                        match (module_.def_id.get(),  target_module.def_id.get()) {
-                            (Some(id1), Some(id2)) if id1 == id2  => {
+                        match (module_.def_id.get(), target_module.def_id.get()) {
+                            (Some(id1), Some(id2)) if id1 == id2 => {
                                 if value_result.is_unknown() {
                                     value_result = UnboundResult;
                                 }
@@ -561,10 +600,9 @@ impl<'a, 'b:'a, 'tcx:'b> ImportResolver<'a, 'b, 'tcx> {
                                     type_result = UnboundResult;
                                 }
                             }
-                            _ =>  {
+                            _ => {
                                 // The import is unresolved. Bail out.
-                                debug!("(resolving single import) unresolved import; \
-                                        bailing out");
+                                debug!("(resolving single import) unresolved import; bailing out");
                                 return ResolveResult::Indeterminate;
                             }
                         }
@@ -617,17 +655,15 @@ impl<'a, 'b:'a, 'tcx:'b> ImportResolver<'a, 'b, 'tcx> {
                         debug!("(resolving single import) found {:?} target: {:?}",
                                namespace_name,
                                name_bindings.def_for_namespace(namespace));
-                        self.check_for_conflicting_import(
-                            &import_resolution,
-                            directive.span,
-                            target,
-                            namespace);
+                        self.check_for_conflicting_import(&import_resolution,
+                                                          directive.span,
+                                                          target,
+                                                          namespace);
 
-                        self.check_that_import_is_importable(
-                            &**name_bindings,
-                            directive.span,
-                            target,
-                            namespace);
+                        self.check_that_import_is_importable(&**name_bindings,
+                                                             directive.span,
+                                                             target,
+                                                             namespace);
 
                         let target = Some(Target::new(target_module.clone(),
                                                       name_bindings.clone(),
@@ -636,7 +672,9 @@ impl<'a, 'b:'a, 'tcx:'b> ImportResolver<'a, 'b, 'tcx> {
                         import_resolution.is_public = directive.is_public;
                         *used_public = name_bindings.defined_in_public_namespace(namespace);
                     }
-                    UnboundResult => { /* Continue. */ }
+                    UnboundResult => {
+                        // Continue.
+                    }
                     UnknownResult => {
                         panic!("{:?} result should be known at this point", namespace_name);
                     }
@@ -646,15 +684,14 @@ impl<'a, 'b:'a, 'tcx:'b> ImportResolver<'a, 'b, 'tcx> {
             check_and_write_import(TypeNS, &type_result, &mut type_used_public);
         }
 
-        self.check_for_conflicts_between_imports_and_items(
-            module_,
-            import_resolution,
-            directive.span,
-            target);
+        self.check_for_conflicts_between_imports_and_items(module_,
+                                                           import_resolution,
+                                                           directive.span,
+                                                           target);
 
         if value_result.is_unbound() && type_result.is_unbound() {
             let msg = format!("There is no `{}` in `{}`",
-                              token::get_name(source),
+                              source,
                               module_to_string(&target_module));
             return ResolveResult::Failed(Some((directive.span, msg)));
         }
@@ -669,33 +706,45 @@ impl<'a, 'b:'a, 'tcx:'b> ImportResolver<'a, 'b, 'tcx> {
         // purposes it's good enough to just favor one over the other.
         let value_def_and_priv = import_resolution.value_target.as_ref().map(|target| {
             let def = target.bindings.def_for_namespace(ValueNS).unwrap();
-            (def, if value_used_public { lp } else { DependsOn(def.def_id()) })
+            (def,
+             if value_used_public {
+                lp
+            } else {
+                DependsOn(def.def_id())
+            })
         });
         let type_def_and_priv = import_resolution.type_target.as_ref().map(|target| {
             let def = target.bindings.def_for_namespace(TypeNS).unwrap();
-            (def, if type_used_public { lp } else { DependsOn(def.def_id()) })
+            (def,
+             if type_used_public {
+                lp
+            } else {
+                DependsOn(def.def_id())
+            })
         });
 
         let import_lp = LastImport {
             value_priv: value_def_and_priv.map(|(_, p)| p),
             value_used: Used,
             type_priv: type_def_and_priv.map(|(_, p)| p),
-            type_used: Used
+            type_used: Used,
         };
 
         if let Some((def, _)) = value_def_and_priv {
-            self.resolver.def_map.borrow_mut().insert(directive.id, PathResolution {
-                base_def: def,
-                last_private: import_lp,
-                depth: 0
-            });
+            self.resolver.def_map.borrow_mut().insert(directive.id,
+                                                      PathResolution {
+                                                          base_def: def,
+                                                          last_private: import_lp,
+                                                          depth: 0,
+                                                      });
         }
         if let Some((def, _)) = type_def_and_priv {
-            self.resolver.def_map.borrow_mut().insert(directive.id, PathResolution {
-                base_def: def,
-                last_private: import_lp,
-                depth: 0
-            });
+            self.resolver.def_map.borrow_mut().insert(directive.id,
+                                                      PathResolution {
+                                                          base_def: def,
+                                                          last_private: import_lp,
+                                                          depth: 0,
+                                                      });
         }
 
         debug!("(resolving single import) successfully resolved import");
@@ -722,30 +771,36 @@ impl<'a, 'b:'a, 'tcx:'b> ImportResolver<'a, 'b, 'tcx> {
 
         // We must bail out if the node has unresolved imports of any kind
         // (including globs).
-        if !(*target_module).all_imports_resolved() {
-            debug!("(resolving glob import) target module has unresolved \
-                    imports; bailing out");
+        if (*target_module).pub_count.get() > 0 {
+            debug!("(resolving glob import) target module has unresolved pub imports; bailing out");
             return ResolveResult::Indeterminate;
         }
 
-        assert_eq!(target_module.glob_count.get(), 0);
-
         // Add all resolved imports from the containing module.
         let import_resolutions = target_module.import_resolutions.borrow();
-        for (ident, target_import_resolution) in &*import_resolutions {
-            debug!("(resolving glob import) writing module resolution \
-                    {} into `{}`",
-                   token::get_name(*ident),
+
+        if module_.import_resolutions.borrow_state() != ::std::cell::BorrowState::Unused {
+            // In this case, target_module == module_
+            // This means we are trying to glob import a module into itself,
+            // and it is a no-go
+            debug!("(resolving glob imports) target module is current module; giving up");
+            return ResolveResult::Failed(Some((import_directive.span,
+                                               "Cannot glob-import a module into itself.".into())));
+        }
+
+        for (name, target_import_resolution) in import_resolutions.iter() {
+            debug!("(resolving glob import) writing module resolution {} into `{}`",
+                   *name,
                    module_to_string(module_));
 
             if !target_import_resolution.is_public {
                 debug!("(resolving glob import) nevermind, just kidding");
-                continue
+                continue;
             }
 
             // Here we merge two import resolutions.
             let mut import_resolutions = module_.import_resolutions.borrow_mut();
-            match import_resolutions.get_mut(ident) {
+            match import_resolutions.get_mut(name) {
                 Some(dest_import_resolution) => {
                     // Merge the two import resolutions at a finer-grained
                     // level.
@@ -757,7 +812,7 @@ impl<'a, 'b:'a, 'tcx:'b> ImportResolver<'a, 'b, 'tcx> {
                         Some(ref value_target) => {
                             self.check_for_conflicting_import(&dest_import_resolution,
                                                               import_directive.span,
-                                                              *ident,
+                                                              *name,
                                                               ValueNS);
                             dest_import_resolution.value_target = Some(value_target.clone());
                         }
@@ -769,7 +824,7 @@ impl<'a, 'b:'a, 'tcx:'b> ImportResolver<'a, 'b, 'tcx> {
                         Some(ref type_target) => {
                             self.check_for_conflicting_import(&dest_import_resolution,
                                                               import_directive.span,
-                                                              *ident,
+                                                              *name,
                                                               TypeNS);
                             dest_import_resolution.type_target = Some(type_target.clone());
                         }
@@ -782,18 +837,16 @@ impl<'a, 'b:'a, 'tcx:'b> ImportResolver<'a, 'b, 'tcx> {
 
             // Simple: just copy the old import resolution.
             let mut new_import_resolution = ImportResolution::new(id, is_public);
-            new_import_resolution.value_target =
-                target_import_resolution.value_target.clone();
-            new_import_resolution.type_target =
-                target_import_resolution.type_target.clone();
+            new_import_resolution.value_target = target_import_resolution.value_target.clone();
+            new_import_resolution.type_target = target_import_resolution.type_target.clone();
 
-            import_resolutions.insert(*ident, new_import_resolution);
+            import_resolutions.insert(*name, new_import_resolution);
         }
 
         // Add all children from the containing module.
         build_reduced_graph::populate_module_if_necessary(self.resolver, &target_module);
 
-        for (&name, name_bindings) in &*target_module.children.borrow() {
+        for (&name, name_bindings) in target_module.children.borrow().iter() {
             self.merge_import_resolution(module_,
                                          target_module.clone(),
                                          import_directive,
@@ -803,9 +856,8 @@ impl<'a, 'b:'a, 'tcx:'b> ImportResolver<'a, 'b, 'tcx> {
         }
 
         // Add external module children from the containing module.
-        for (&name, module) in &*target_module.external_module_children.borrow() {
-            let name_bindings =
-                Rc::new(Resolver::create_name_bindings_from_module(module.clone()));
+        for (&name, module) in target_module.external_module_children.borrow().iter() {
+            let name_bindings = Rc::new(Resolver::create_name_bindings_from_module(module.clone()));
             self.merge_import_resolution(module_,
                                          target_module.clone(),
                                          import_directive,
@@ -815,11 +867,12 @@ impl<'a, 'b:'a, 'tcx:'b> ImportResolver<'a, 'b, 'tcx> {
 
         // Record the destination of this import
         if let Some(did) = target_module.def_id.get() {
-            self.resolver.def_map.borrow_mut().insert(id, PathResolution {
-                base_def: DefMod(did),
-                last_private: lp,
-                depth: 0
-            });
+            self.resolver.def_map.borrow_mut().insert(id,
+                                                      PathResolution {
+                                                          base_def: DefMod(did),
+                                                          last_private: lp,
+                                                          depth: 0,
+                                                      });
         }
 
         debug!("(resolving glob import) successfully resolved import");
@@ -837,11 +890,12 @@ impl<'a, 'b:'a, 'tcx:'b> ImportResolver<'a, 'b, 'tcx> {
 
         let mut import_resolutions = module_.import_resolutions.borrow_mut();
         let dest_import_resolution = import_resolutions.entry(name)
-            .or_insert_with(|| ImportResolution::new(id, is_public));
+                                                       .or_insert_with(|| {
+                                                           ImportResolution::new(id, is_public)
+                                                       });
 
-        debug!("(resolving glob import) writing resolution `{}` in `{}` \
-               to `{}`",
-               &token::get_name(name),
+        debug!("(resolving glob import) writing resolution `{}` in `{}` to `{}`",
+               name,
                module_to_string(&*containing_module),
                module_to_string(module_));
 
@@ -857,18 +911,20 @@ impl<'a, 'b:'a, 'tcx:'b> ImportResolver<'a, 'b, 'tcx> {
                     };
                     debug!("(resolving glob import) ... for {} target", namespace_name);
                     if dest_import_resolution.shadowable(namespace) == Shadowable::Never {
-                        let msg = format!("a {} named `{}` has already been imported \
-                                           in this module",
+                        let msg = format!("a {} named `{}` has already been imported in this \
+                                           module",
                                           namespace_name,
-                                          &token::get_name(name));
-                        span_err!(self.resolver.session, import_directive.span, E0251, "{}", msg);
+                                          name);
+                        span_err!(self.resolver.session,
+                                  import_directive.span,
+                                  E0251,
+                                  "{}",
+                                  msg);
                     } else {
                         let target = Target::new(containing_module.clone(),
                                                  name_bindings.clone(),
                                                  import_directive.shadowable);
-                        dest_import_resolution.set_target_and_id(namespace,
-                                                                 Some(target),
-                                                                 id);
+                        dest_import_resolution.set_target_and_id(namespace, Some(target), id);
                     }
                 }
             };
@@ -878,11 +934,10 @@ impl<'a, 'b:'a, 'tcx:'b> ImportResolver<'a, 'b, 'tcx> {
 
         dest_import_resolution.is_public = is_public;
 
-        self.check_for_conflicts_between_imports_and_items(
-            module_,
-            dest_import_resolution,
-            import_directive.span,
-            name);
+        self.check_for_conflicts_between_imports_and_items(module_,
+                                                           dest_import_resolution,
+                                                           import_directive.span,
+                                                           name);
     }
 
     /// Checks that imported names and items don't have the same name.
@@ -893,25 +948,40 @@ impl<'a, 'b:'a, 'tcx:'b> ImportResolver<'a, 'b, 'tcx> {
                                     namespace: Namespace) {
         let target = import_resolution.target_for_namespace(namespace);
         debug!("check_for_conflicting_import: {}; target exists: {}",
-               &token::get_name(name),
+               name,
                target.is_some());
 
         match target {
             Some(ref target) if target.shadowable != Shadowable::Always => {
                 let ns_word = match namespace {
-                    TypeNS => "type",
+                    TypeNS => {
+                        if let Some(ref ty_def) = *target.bindings.type_def.borrow() {
+                            match ty_def.module_def {
+                                Some(ref module) if module.kind.get() ==
+                                                    ModuleKind::NormalModuleKind => "module",
+                                Some(ref module) if module.kind.get() ==
+                                                    ModuleKind::TraitModuleKind => "trait",
+                                _ => "type",
+                            }
+                        } else {
+                            "type"
+                        }
+                    }
                     ValueNS => "value",
                 };
-                span_err!(self.resolver.session, import_span, E0252,
-                          "a {} named `{}` has already been imported \
-                           in this module", ns_word,
-                                  &token::get_name(name));
+                span_err!(self.resolver.session,
+                          import_span,
+                          E0252,
+                          "a {} named `{}` has already been imported in this module",
+                          ns_word,
+                          name);
                 let use_id = import_resolution.id(namespace);
                 let item = self.resolver.ast_map.expect_item(use_id);
                 // item is syntax::ast::Item;
-                span_note!(self.resolver.session, item.span,
-                            "previous import of `{}` here",
-                            token::get_name(name));
+                span_note!(self.resolver.session,
+                           item.span,
+                           "previous import of `{}` here",
+                           name);
             }
             Some(_) | None => {}
         }
@@ -924,8 +994,7 @@ impl<'a, 'b:'a, 'tcx:'b> ImportResolver<'a, 'b, 'tcx> {
                                        name: Name,
                                        namespace: Namespace) {
         if !name_bindings.defined_in_namespace_with(namespace, DefModifiers::IMPORTABLE) {
-            let msg = format!("`{}` is not directly importable",
-                              token::get_name(name));
+            let msg = format!("`{}` is not directly importable", name);
             span_err!(self.resolver.session, import_span, E0253, "{}", &msg[..]);
         }
     }
@@ -933,8 +1002,7 @@ impl<'a, 'b:'a, 'tcx:'b> ImportResolver<'a, 'b, 'tcx> {
     /// Checks that imported names and items don't have the same name.
     fn check_for_conflicts_between_imports_and_items(&mut self,
                                                      module: &Module,
-                                                     import_resolution:
-                                                     &ImportResolution,
+                                                     import_resolution: &ImportResolution,
                                                      import_span: Span,
                                                      name: Name) {
         // First, check for conflicts between imports and `extern crate`s.
@@ -943,10 +1011,9 @@ impl<'a, 'b:'a, 'tcx:'b> ImportResolver<'a, 'b, 'tcx> {
                  .contains_key(&name) {
             match import_resolution.type_target {
                 Some(ref target) if target.shadowable != Shadowable::Always => {
-                    let msg = format!("import `{0}` conflicts with imported \
-                                       crate in this module \
+                    let msg = format!("import `{0}` conflicts with imported crate in this module \
                                        (maybe you meant `use {0}::*`?)",
-                                      &token::get_name(name));
+                                      name);
                     span_err!(self.resolver.session, import_span, E0254, "{}", &msg[..]);
                 }
                 Some(_) | None => {}
@@ -958,7 +1025,7 @@ impl<'a, 'b:'a, 'tcx:'b> ImportResolver<'a, 'b, 'tcx> {
         let name_bindings = match children.get(&name) {
             None => {
                 // There can't be any conflicts.
-                return
+                return;
             }
             Some(ref name_bindings) => (*name_bindings).clone(),
         };
@@ -966,9 +1033,11 @@ impl<'a, 'b:'a, 'tcx:'b> ImportResolver<'a, 'b, 'tcx> {
         match import_resolution.value_target {
             Some(ref target) if target.shadowable != Shadowable::Always => {
                 if let Some(ref value) = *name_bindings.value_def.borrow() {
-                    span_err!(self.resolver.session, import_span, E0255,
+                    span_err!(self.resolver.session,
+                              import_span,
+                              E0255,
                               "import `{}` conflicts with value in this module",
-                              &token::get_name(name));
+                              name);
                     if let Some(span) = value.value_span {
                         self.resolver.session.span_note(span, "conflicting value here");
                     }
@@ -980,14 +1049,19 @@ impl<'a, 'b:'a, 'tcx:'b> ImportResolver<'a, 'b, 'tcx> {
         match import_resolution.type_target {
             Some(ref target) if target.shadowable != Shadowable::Always => {
                 if let Some(ref ty) = *name_bindings.type_def.borrow() {
-                    let (what, note) = if ty.module_def.is_some() {
-                        ("existing submodule", "note conflicting module here")
-                    } else {
-                        ("type in this module", "note conflicting type here")
+                    let (what, note) = match ty.module_def {
+                        Some(ref module) if module.kind.get() == ModuleKind::NormalModuleKind =>
+                            ("existing submodule", "note conflicting module here"),
+                        Some(ref module) if module.kind.get() == ModuleKind::TraitModuleKind =>
+                            ("trait in this module", "note conflicting trait here"),
+                        _ => ("type in this module", "note conflicting type here"),
                     };
-                    span_err!(self.resolver.session, import_span, E0256,
+                    span_err!(self.resolver.session,
+                              import_span,
+                              E0256,
                               "import `{}` conflicts with {}",
-                              &token::get_name(name), what);
+                              name,
+                              what);
                     if let Some(span) = ty.type_span {
                         self.resolver.session.span_note(span, note);
                     }
@@ -998,30 +1072,25 @@ impl<'a, 'b:'a, 'tcx:'b> ImportResolver<'a, 'b, 'tcx> {
     }
 }
 
-fn import_path_to_string(names: &[Name],
-                         subclass: ImportDirectiveSubclass)
-                         -> String {
+fn import_path_to_string(names: &[Name], subclass: ImportDirectiveSubclass) -> String {
     if names.is_empty() {
         import_directive_subclass_to_string(subclass)
     } else {
         (format!("{}::{}",
                  names_to_string(names),
-                 import_directive_subclass_to_string(subclass))).to_string()
+                 import_directive_subclass_to_string(subclass)))
+            .to_string()
     }
 }
 
 fn import_directive_subclass_to_string(subclass: ImportDirectiveSubclass) -> String {
     match subclass {
-        SingleImport(_, source) => {
-            token::get_name(source).to_string()
-        }
-        GlobImport => "*".to_string()
+        SingleImport(_, source) => source.to_string(),
+        GlobImport => "*".to_string(),
     }
 }
 
 pub fn resolve_imports(resolver: &mut Resolver) {
-    let mut import_resolver = ImportResolver {
-        resolver: resolver,
-    };
+    let mut import_resolver = ImportResolver { resolver: resolver };
     import_resolver.resolve_imports();
 }

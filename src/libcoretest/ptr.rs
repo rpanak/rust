@@ -9,8 +9,6 @@
 // except according to those terms.
 
 use core::ptr::*;
-use core::mem;
-use std::iter::repeat;
 
 #[test]
 fn test() {
@@ -21,7 +19,7 @@ fn test() {
         };
         let mut p = Pair {fst: 10, snd: 20};
         let pptr: *mut Pair = &mut p;
-        let iptr: *mut isize = mem::transmute(pptr);
+        let iptr: *mut isize = pptr as *mut isize;
         assert_eq!(*iptr, 10);
         *iptr = 30;
         assert_eq!(*iptr, 30);
@@ -110,7 +108,7 @@ fn test_as_mut() {
 #[test]
 fn test_ptr_addition() {
     unsafe {
-        let xs = repeat(5).take(16).collect::<Vec<_>>();
+        let xs = vec![5; 16];
         let mut ptr = xs.as_ptr();
         let end = ptr.offset(16);
 
@@ -128,7 +126,7 @@ fn test_ptr_addition() {
             m_ptr = m_ptr.offset(1);
         }
 
-        assert!(xs_mut == repeat(10).take(16).collect::<Vec<_>>());
+        assert!(xs_mut == vec![10; 16]);
     }
 }
 

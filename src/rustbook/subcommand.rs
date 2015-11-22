@@ -8,7 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-//! Common API for all rust-book subcommands.
+//! Common API for all rustbook subcommands.
 
 use error::CliResult;
 use error::CommandResult;
@@ -36,7 +36,7 @@ pub fn parse_name(name: &str) -> Option<Box<Subcommand>> {
                                                           build::parse_cmd,
                                                           serve::parse_cmd,
                                                           test::parse_cmd];
-    for parser in cmds.iter() {
+    for parser in &cmds {
         let parsed = (*parser)(name);
         if parsed.is_some() { return parsed }
     }

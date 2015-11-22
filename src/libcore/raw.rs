@@ -9,7 +9,7 @@
 // except according to those terms.
 
 #![allow(missing_docs)]
-#![unstable(feature = "core")]
+#![unstable(feature = "raw", issue = "27751")]
 
 //! Contains struct definitions for the layout of compiler built-in types.
 //!
@@ -49,7 +49,8 @@ use mem;
 /// # Examples
 ///
 /// ```
-/// # #![feature(core)]
+/// #![feature(raw)]
+///
 /// use std::raw::{self, Repr};
 ///
 /// let slice: &[u16] = &[1, 2, 3, 4];
@@ -93,12 +94,13 @@ impl<T> Clone for Slice<T> {
 /// Synthesizing a trait object with mismatched types—one where the
 /// vtable does not correspond to the type of the value to which the
 /// data pointer points—is highly likely to lead to undefined
-/// behaviour.
+/// behavior.
 ///
 /// # Examples
 ///
 /// ```
-/// # #![feature(core)]
+/// #![feature(raw)]
+///
 /// use std::mem;
 /// use std::raw;
 ///

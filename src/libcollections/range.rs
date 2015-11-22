@@ -7,7 +7,9 @@
 // <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
-#![unstable(feature = "collections_range", reason = "was just added")]
+
+#![unstable(feature = "collections_range", reason = "was just added",
+            issue = "27711")]
 
 //! Range syntax.
 

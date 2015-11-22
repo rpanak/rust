@@ -9,8 +9,9 @@
 // except according to those terms.
 
 #![feature(box_syntax)]
+#![feature(placement_in_syntax)]
 
 fn main() {
-    box ( () ) 0;
-    //~^ ERROR: only the exchange heap is currently supported
+    () <- 0;
+    //~^ ERROR: the trait `core::ops::Placer<_>` is not implemented
 }

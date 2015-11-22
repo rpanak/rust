@@ -73,7 +73,6 @@ pub trait AstBuilder {
 
     fn ty_vars(&self, ty_params: &OwnedSlice<ast::TyParam>) -> Vec<P<ast::Ty>> ;
     fn ty_vars_global(&self, ty_params: &OwnedSlice<ast::TyParam>) -> Vec<P<ast::Ty>> ;
-    fn ty_field_imm(&self, span: Span, name: Ident, ty: P<ast::Ty>) -> ast::TypeField;
 
     fn typaram(&self,
                span: Span,
@@ -248,9 +247,9 @@ pub trait AstBuilder {
     fn item_struct_poly(&self,
                         span: Span,
                         name: Ident,
-                        struct_def: ast::StructDef,
+                        struct_def: ast::VariantData,
                         generics: Generics) -> P<ast::Item>;
-    fn item_struct(&self, span: Span, name: Ident, struct_def: ast::StructDef) -> P<ast::Item>;
+    fn item_struct(&self, span: Span, name: Ident, struct_def: ast::VariantData) -> P<ast::Item>;
 
     fn item_mod(&self, span: Span, inner_span: Span,
                 name: Ident, attrs: Vec<ast::Attribute>,
@@ -437,22 +436,10 @@ impl<'a> AstBuilder for ExtCtxt<'a> {
         self.ty_path(
             self.path_all(DUMMY_SP,
                           true,
-                          vec!(
-                              self.ident_of_std("core"),
-                              self.ident_of("option"),
-                              self.ident_of("Option")
-                          ),
+                          self.std_path(&["option", "Option"]),
                           Vec::new(),
                           vec!( ty ),
                           Vec::new()))
-    }
-
-    fn ty_field_imm(&self, span: Span, name: Ident, ty: P<ast::Ty>) -> ast::TypeField {
-        ast::TypeField {
-            ident: name,
-            mt: ast::MutTy { ty: ty, mutbl: ast::MutImmutable },
-            span: span,
-        }
     }
 
     fn ty_infer(&self, span: Span) -> P<ast::Ty> {
@@ -538,7 +525,6 @@ impl<'a> AstBuilder for ExtCtxt<'a> {
             init: Some(ex),
             id: ast::DUMMY_NODE_ID,
             span: sp,
-            source: ast::LocalLet,
         });
         let decl = respan(sp, ast::DeclLocal(local));
         P(respan(sp, ast::StmtDecl(P(decl), ast::DUMMY_NODE_ID)))
@@ -562,7 +548,6 @@ impl<'a> AstBuilder for ExtCtxt<'a> {
             init: Some(ex),
             id: ast::DUMMY_NODE_ID,
             span: sp,
-            source: ast::LocalLet,
         });
         let decl = respan(sp, ast::DeclLocal(local));
         P(respan(sp, ast::StmtDecl(P(decl), ast::DUMMY_NODE_ID)))
@@ -631,9 +616,8 @@ impl<'a> AstBuilder for ExtCtxt<'a> {
     }
 
     fn expr_field_access(&self, sp: Span, expr: P<ast::Expr>, ident: ast::Ident) -> P<ast::Expr> {
-        let field_name = token::get_ident(ident);
         let field_span = Span {
-            lo: sp.lo - Pos::from_usize(field_name.len()),
+            lo: sp.lo - Pos::from_usize(ident.name.as_str().len()),
             hi: sp.hi,
             expn_id: sp.expn_id,
         };
@@ -716,11 +700,7 @@ impl<'a> AstBuilder for ExtCtxt<'a> {
         self.expr(sp, ast::ExprVec(exprs))
     }
     fn expr_vec_ng(&self, sp: Span) -> P<ast::Expr> {
-        self.expr_call_global(sp,
-                              vec!(self.ident_of_std("collections"),
-                                   self.ident_of("vec"),
-                                   self.ident_of("Vec"),
-                                   self.ident_of("new")),
+        self.expr_call_global(sp, self.std_path(&["vec", "Vec", "new"]),
                               Vec::new())
     }
     fn expr_vec_slice(&self, sp: Span, exprs: Vec<P<ast::Expr>>) -> P<ast::Expr> {
@@ -736,20 +716,13 @@ impl<'a> AstBuilder for ExtCtxt<'a> {
 
 
     fn expr_some(&self, sp: Span, expr: P<ast::Expr>) -> P<ast::Expr> {
-        let some = vec!(
-            self.ident_of_std("core"),
-            self.ident_of("option"),
-            self.ident_of("Option"),
-            self.ident_of("Some"));
+        let some = self.std_path(&["option", "Option", "Some"]);
         self.expr_call_global(sp, some, vec!(expr))
     }
 
     fn expr_none(&self, sp: Span) -> P<ast::Expr> {
-        let none = self.path_global(sp, vec!(
-            self.ident_of_std("core"),
-            self.ident_of("option"),
-            self.ident_of("Option"),
-            self.ident_of("None")));
+        let none = self.std_path(&["option", "Option", "None"]);
+        let none = self.path_global(sp, none);
         self.expr_path(none)
     }
 
@@ -772,10 +745,7 @@ impl<'a> AstBuilder for ExtCtxt<'a> {
         let expr_file_line_ptr = self.expr_addr_of(span, expr_file_line_tuple);
         self.expr_call_global(
             span,
-            vec!(
-                self.ident_of_std("core"),
-                self.ident_of("rt"),
-                self.ident_of("begin_unwind")),
+            self.std_path(&["rt", "begin_unwind"]),
             vec!(
                 self.expr_str(span, msg),
                 expr_file_line_ptr))
@@ -788,37 +758,19 @@ impl<'a> AstBuilder for ExtCtxt<'a> {
     }
 
     fn expr_ok(&self, sp: Span, expr: P<ast::Expr>) -> P<ast::Expr> {
-        let ok = vec!(
-            self.ident_of_std("core"),
-            self.ident_of("result"),
-            self.ident_of("Result"),
-            self.ident_of("Ok"));
+        let ok = self.std_path(&["result", "Result", "Ok"]);
         self.expr_call_global(sp, ok, vec!(expr))
     }
 
     fn expr_err(&self, sp: Span, expr: P<ast::Expr>) -> P<ast::Expr> {
-        let err = vec!(
-            self.ident_of_std("core"),
-            self.ident_of("result"),
-            self.ident_of("Result"),
-            self.ident_of("Err"));
+        let err = self.std_path(&["result", "Result", "Err"]);
         self.expr_call_global(sp, err, vec!(expr))
     }
 
     fn expr_try(&self, sp: Span, head: P<ast::Expr>) -> P<ast::Expr> {
-        let ok = vec![
-            self.ident_of_std("core"),
-            self.ident_of("result"),
-            self.ident_of("Result"),
-            self.ident_of("Ok")
-        ];
+        let ok = self.std_path(&["result", "Result", "Ok"]);
         let ok_path = self.path_global(sp, ok);
-        let err = vec![
-            self.ident_of_std("core"),
-            self.ident_of("result"),
-            self.ident_of("Result"),
-            self.ident_of("Err")
-        ];
+        let err = self.std_path(&["result", "Result", "Err"]);
         let err_path = self.path_global(sp, err);
 
         let binding_variable = self.ident_of("__try_var");
@@ -849,7 +801,7 @@ impl<'a> AstBuilder for ExtCtxt<'a> {
         P(ast::Pat { id: ast::DUMMY_NODE_ID, node: pat, span: span })
     }
     fn pat_wild(&self, span: Span) -> P<ast::Pat> {
-        self.pat(span, ast::PatWild(ast::PatWildSingle))
+        self.pat(span, ast::PatWild)
     }
     fn pat_lit(&self, span: Span, expr: P<ast::Expr>) -> P<ast::Pat> {
         self.pat(span, ast::PatLit(expr))
@@ -879,41 +831,25 @@ impl<'a> AstBuilder for ExtCtxt<'a> {
     }
 
     fn pat_some(&self, span: Span, pat: P<ast::Pat>) -> P<ast::Pat> {
-        let some = vec!(
-            self.ident_of_std("core"),
-            self.ident_of("option"),
-            self.ident_of("Option"),
-            self.ident_of("Some"));
+        let some = self.std_path(&["option", "Option", "Some"]);
         let path = self.path_global(span, some);
         self.pat_enum(span, path, vec!(pat))
     }
 
     fn pat_none(&self, span: Span) -> P<ast::Pat> {
-        let some = vec!(
-            self.ident_of_std("core"),
-            self.ident_of("option"),
-            self.ident_of("Option"),
-            self.ident_of("None"));
+        let some = self.std_path(&["option", "Option", "None"]);
         let path = self.path_global(span, some);
         self.pat_enum(span, path, vec!())
     }
 
     fn pat_ok(&self, span: Span, pat: P<ast::Pat>) -> P<ast::Pat> {
-        let some = vec!(
-            self.ident_of_std("core"),
-            self.ident_of("result"),
-            self.ident_of("Result"),
-            self.ident_of("Ok"));
+        let some = self.std_path(&["result", "Result", "Ok"]);
         let path = self.path_global(span, some);
         self.pat_enum(span, path, vec!(pat))
     }
 
     fn pat_err(&self, span: Span, pat: P<ast::Pat>) -> P<ast::Pat> {
-        let some = vec!(
-            self.ident_of_std("core"),
-            self.ident_of("result"),
-            self.ident_of("Result"),
-            self.ident_of("Err"));
+        let some = self.std_path(&["result", "Result", "Err"]);
         let path = self.path_global(span, some);
         self.pat_enum(span, path, vec!(pat))
     }
@@ -932,7 +868,7 @@ impl<'a> AstBuilder for ExtCtxt<'a> {
     }
 
     fn expr_match(&self, span: Span, arg: P<ast::Expr>, arms: Vec<ast::Arm>) -> P<Expr> {
-        self.expr(span, ast::ExprMatch(arg, arms, ast::MatchSource::Normal))
+        self.expr(span, ast::ExprMatch(arg, arms))
     }
 
     fn expr_if(&self, span: Span, cond: P<ast::Expr>,
@@ -1034,6 +970,7 @@ impl<'a> AstBuilder for ExtCtxt<'a> {
                   Vec::new(),
                   ast::ItemFn(self.fn_decl(inputs, output),
                               ast::Unsafety::Normal,
+                              ast::Constness::NotConst,
                               abi::Rust,
                               generics,
                               body))
@@ -1056,18 +993,27 @@ impl<'a> AstBuilder for ExtCtxt<'a> {
     }
 
     fn variant(&self, span: Span, name: Ident, tys: Vec<P<ast::Ty>> ) -> ast::Variant {
-        let args = tys.into_iter().map(|ty| {
-            ast::VariantArg { ty: ty, id: ast::DUMMY_NODE_ID }
+        let fields: Vec<_> = tys.into_iter().map(|ty| {
+            Spanned { span: ty.span, node: ast::StructField_ {
+                ty: ty,
+                kind: ast::UnnamedField(ast::Inherited),
+                attrs: Vec::new(),
+                id: ast::DUMMY_NODE_ID,
+            }}
         }).collect();
+
+        let vdata = if fields.is_empty() {
+            ast::VariantData::Unit(ast::DUMMY_NODE_ID)
+        } else {
+            ast::VariantData::Tuple(fields, ast::DUMMY_NODE_ID)
+        };
 
         respan(span,
                ast::Variant_ {
                    name: name,
                    attrs: Vec::new(),
-                   kind: ast::TupleVariantKind(args),
-                   id: ast::DUMMY_NODE_ID,
+                   data: vdata,
                    disr_expr: None,
-                   vis: ast::Public
                })
     }
 
@@ -1084,7 +1030,7 @@ impl<'a> AstBuilder for ExtCtxt<'a> {
     }
 
     fn item_struct(&self, span: Span, name: Ident,
-                   struct_def: ast::StructDef) -> P<ast::Item> {
+                   struct_def: ast::VariantData) -> P<ast::Item> {
         self.item_struct_poly(
             span,
             name,
@@ -1094,8 +1040,8 @@ impl<'a> AstBuilder for ExtCtxt<'a> {
     }
 
     fn item_struct_poly(&self, span: Span, name: Ident,
-        struct_def: ast::StructDef, generics: Generics) -> P<ast::Item> {
-        self.item(span, name, Vec::new(), ast::ItemStruct(P(struct_def), generics))
+        struct_def: ast::VariantData, generics: Generics) -> P<ast::Item> {
+        self.item(span, name, Vec::new(), ast::ItemStruct(struct_def, generics))
     }
 
     fn item_mod(&self, span: Span, inner_span: Span, name: Ident,
@@ -1143,7 +1089,7 @@ impl<'a> AstBuilder for ExtCtxt<'a> {
     fn attribute(&self, sp: Span, mi: P<ast::MetaItem>) -> ast::Attribute {
         respan(sp, ast::Attribute_ {
             id: attr::mk_attr_id(),
-            style: ast::AttrOuter,
+            style: ast::AttrStyle::Outer,
             value: mi,
             is_sugared_doc: false,
         })
@@ -1195,7 +1141,7 @@ impl<'a> AstBuilder for ExtCtxt<'a> {
     fn item_use_list(&self, sp: Span, vis: ast::Visibility,
                      path: Vec<ast::Ident>, imports: &[ast::Ident]) -> P<ast::Item> {
         let imports = imports.iter().map(|id| {
-            respan(sp, ast::PathListIdent { name: *id, id: ast::DUMMY_NODE_ID })
+            respan(sp, ast::PathListIdent { name: *id, rename: None, id: ast::DUMMY_NODE_ID })
         }).collect();
 
         self.item_use(sp, vis,

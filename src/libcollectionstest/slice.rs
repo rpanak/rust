@@ -10,11 +10,9 @@
 
 use std::cmp::Ordering::{Equal, Greater, Less};
 use std::default::Default;
-use std::iter::RandomAccessIterator;
 use std::mem;
 use std::__rand::{Rng, thread_rng};
 use std::rc::Rc;
-use std::slice::ElementSwaps;
 
 fn square(n: usize) -> usize { n * n }
 
@@ -119,71 +117,48 @@ fn test_first_mut() {
 }
 
 #[test]
-fn test_tail() {
+fn test_split_first() {
     let mut a = vec![11];
     let b: &[i32] = &[];
-    assert_eq!(a.tail(), b);
+    assert!(b.split_first().is_none());
+    assert_eq!(a.split_first(), Some((&11, b)));
     a = vec![11, 12];
     let b: &[i32] = &[12];
-    assert_eq!(a.tail(), b);
+    assert_eq!(a.split_first(), Some((&11, b)));
 }
 
 #[test]
-fn test_tail_mut() {
+fn test_split_first_mut() {
     let mut a = vec![11];
     let b: &mut [i32] = &mut [];
-    assert!(a.tail_mut() == b);
+    assert!(b.split_first_mut().is_none());
+    assert!(a.split_first_mut() == Some((&mut 11, b)));
     a = vec![11, 12];
     let b: &mut [_] = &mut [12];
-    assert!(a.tail_mut() == b);
+    assert!(a.split_first_mut() == Some((&mut 11, b)));
 }
 
 #[test]
-#[should_panic]
-fn test_tail_empty() {
-    let a = Vec::<i32>::new();
-    a.tail();
-}
-
-#[test]
-#[should_panic]
-fn test_tail_mut_empty() {
-    let mut a = Vec::<i32>::new();
-    a.tail_mut();
-}
-
-#[test]
-fn test_init() {
+fn test_split_last() {
     let mut a = vec![11];
     let b: &[i32] = &[];
-    assert_eq!(a.init(), b);
+    assert!(b.split_last().is_none());
+    assert_eq!(a.split_last(), Some((&11, b)));
     a = vec![11, 12];
     let b: &[_] = &[11];
-    assert_eq!(a.init(), b);
+    assert_eq!(a.split_last(), Some((&12, b)));
 }
 
 #[test]
-fn test_init_mut() {
+fn test_split_last_mut() {
     let mut a = vec![11];
     let b: &mut [i32] = &mut [];
-    assert!(a.init_mut() == b);
+    assert!(b.split_last_mut().is_none());
+    assert!(a.split_last_mut() == Some((&mut 11, b)));
+
     a = vec![11, 12];
     let b: &mut [_] = &mut [11];
-    assert!(a.init_mut() == b);
-}
-
-#[test]
-#[should_panic]
-fn test_init_empty() {
-    let a = Vec::<i32>::new();
-    a.init();
-}
-
-#[test]
-#[should_panic]
-fn test_init_mut_empty() {
-    let mut a = Vec::<i32>::new();
-    a.init_mut();
+    assert!(a.split_last_mut() == Some((&mut 12, b)));
 }
 
 #[test]
@@ -390,97 +365,6 @@ fn test_retain() {
 }
 
 #[test]
-fn test_element_swaps() {
-    let mut v = [1, 2, 3];
-    for (i, (a, b)) in ElementSwaps::new(v.len()).enumerate() {
-        v.swap(a, b);
-        match i {
-            0 => assert!(v == [1, 3, 2]),
-            1 => assert!(v == [3, 1, 2]),
-            2 => assert!(v == [3, 2, 1]),
-            3 => assert!(v == [2, 3, 1]),
-            4 => assert!(v == [2, 1, 3]),
-            5 => assert!(v == [1, 2, 3]),
-            _ => panic!(),
-        }
-    }
-}
-
-#[test]
-fn test_lexicographic_permutations() {
-    let v : &mut[_] = &mut[1, 2, 3, 4, 5];
-    assert!(v.prev_permutation() == false);
-    assert!(v.next_permutation());
-    let b: &mut[_] = &mut[1, 2, 3, 5, 4];
-    assert!(v == b);
-    assert!(v.prev_permutation());
-    let b: &mut[_] = &mut[1, 2, 3, 4, 5];
-    assert!(v == b);
-    assert!(v.next_permutation());
-    assert!(v.next_permutation());
-    let b: &mut[_] = &mut[1, 2, 4, 3, 5];
-    assert!(v == b);
-    assert!(v.next_permutation());
-    let b: &mut[_] = &mut[1, 2, 4, 5, 3];
-    assert!(v == b);
-
-    let v : &mut[_] = &mut[1, 0, 0, 0];
-    assert!(v.next_permutation() == false);
-    assert!(v.prev_permutation());
-    let b: &mut[_] = &mut[0, 1, 0, 0];
-    assert!(v == b);
-    assert!(v.prev_permutation());
-    let b: &mut[_] = &mut[0, 0, 1, 0];
-    assert!(v == b);
-    assert!(v.prev_permutation());
-    let b: &mut[_] = &mut[0, 0, 0, 1];
-    assert!(v == b);
-    assert!(v.prev_permutation() == false);
-}
-
-#[test]
-fn test_lexicographic_permutations_empty_and_short() {
-    let empty : &mut[i32] = &mut[];
-    assert!(empty.next_permutation() == false);
-    let b: &mut[i32] = &mut[];
-    assert!(empty == b);
-    assert!(empty.prev_permutation() == false);
-    assert!(empty == b);
-
-    let one_elem : &mut[_] = &mut[4];
-    assert!(one_elem.prev_permutation() == false);
-    let b: &mut[_] = &mut[4];
-    assert!(one_elem == b);
-    assert!(one_elem.next_permutation() == false);
-    assert!(one_elem == b);
-
-    let two_elem : &mut[_] = &mut[1, 2];
-    assert!(two_elem.prev_permutation() == false);
-    let b : &mut[_] = &mut[1, 2];
-    let c : &mut[_] = &mut[2, 1];
-    assert!(two_elem == b);
-    assert!(two_elem.next_permutation());
-    assert!(two_elem == c);
-    assert!(two_elem.next_permutation() == false);
-    assert!(two_elem == c);
-    assert!(two_elem.prev_permutation());
-    assert!(two_elem == b);
-    assert!(two_elem.prev_permutation() == false);
-    assert!(two_elem == b);
-}
-
-#[test]
-fn test_position_elem() {
-    assert!([].position_elem(&1).is_none());
-
-    let v1 = vec![1, 2, 3, 3, 2, 5];
-    assert_eq!(v1.position_elem(&1), Some(0));
-    assert_eq!(v1.position_elem(&2), Some(1));
-    assert_eq!(v1.position_elem(&5), Some(5));
-    assert!(v1.position_elem(&4).is_none());
-}
-
-#[test]
 fn test_binary_search() {
     assert_eq!([1,2,3,4,5].binary_search(&5).ok(), Some(4));
     assert_eq!([1,2,3,4,5].binary_search(&4).ok(), Some(3));
@@ -606,22 +490,22 @@ fn test_concat() {
     assert_eq!(d, [1, 2, 3]);
 
     let v: &[&[_]] = &[&[1], &[2, 3]];
-    assert_eq!(v.connect(&0), [1, 0, 2, 3]);
+    assert_eq!(v.join(&0), [1, 0, 2, 3]);
     let v: &[&[_]] = &[&[1], &[2], &[3]];
-    assert_eq!(v.connect(&0), [1, 0, 2, 0, 3]);
+    assert_eq!(v.join(&0), [1, 0, 2, 0, 3]);
 }
 
 #[test]
-fn test_connect() {
+fn test_join() {
     let v: [Vec<i32>; 0] = [];
-    assert_eq!(v.connect(&0), []);
-    assert_eq!([vec![1], vec![2, 3]].connect(&0), [1, 0, 2, 3]);
-    assert_eq!([vec![1], vec![2], vec![3]].connect(&0), [1, 0, 2, 0, 3]);
+    assert_eq!(v.join(&0), []);
+    assert_eq!([vec![1], vec![2, 3]].join(&0), [1, 0, 2, 3]);
+    assert_eq!([vec![1], vec![2], vec![3]].join(&0), [1, 0, 2, 0, 3]);
 
     let v: [&[_]; 2] = [&[1], &[2, 3]];
-    assert_eq!(v.connect(&0), [1, 0, 2, 3]);
+    assert_eq!(v.join(&0), [1, 0, 2, 3]);
     let v: [&[_]; 3] = [&[1], &[2], &[3]];
-    assert_eq!(v.connect(&0), [1, 0, 2, 0, 3]);
+    assert_eq!(v.join(&0), [1, 0, 2, 0, 3]);
 }
 
 #[test]
@@ -692,21 +576,6 @@ fn test_slice_2() {
 }
 
 #[test]
-#[should_panic]
-fn test_permute_fail() {
-    let v: [(Box<_>, Rc<_>); 4] =
-        [(box 0, Rc::new(0)), (box 0, Rc::new(0)),
-         (box 0, Rc::new(0)), (box 0, Rc::new(0))];
-    let mut i = 0;
-    for _ in v.permutations() {
-        if i == 2 {
-            panic!()
-        }
-        i += 1;
-    }
-}
-
-#[test]
 fn test_total_ord() {
     let c = &[1, 2, 3];
     [1, 2, 3, 4][..].cmp(c) == Greater;
@@ -735,44 +604,6 @@ fn test_iterator() {
     assert_eq!(it.size_hint(), (1, Some(1)));
     assert_eq!(it.next().unwrap(), &11);
     assert_eq!(it.size_hint(), (0, Some(0)));
-    assert!(it.next().is_none());
-}
-
-#[test]
-fn test_random_access_iterator() {
-    let xs = [1, 2, 5, 10, 11];
-    let mut it = xs.iter();
-
-    assert_eq!(it.indexable(), 5);
-    assert_eq!(it.idx(0).unwrap(), &1);
-    assert_eq!(it.idx(2).unwrap(), &5);
-    assert_eq!(it.idx(4).unwrap(), &11);
-    assert!(it.idx(5).is_none());
-
-    assert_eq!(it.next().unwrap(), &1);
-    assert_eq!(it.indexable(), 4);
-    assert_eq!(it.idx(0).unwrap(), &2);
-    assert_eq!(it.idx(3).unwrap(), &11);
-    assert!(it.idx(4).is_none());
-
-    assert_eq!(it.next().unwrap(), &2);
-    assert_eq!(it.indexable(), 3);
-    assert_eq!(it.idx(1).unwrap(), &10);
-    assert!(it.idx(3).is_none());
-
-    assert_eq!(it.next().unwrap(), &5);
-    assert_eq!(it.indexable(), 2);
-    assert_eq!(it.idx(1).unwrap(), &11);
-
-    assert_eq!(it.next().unwrap(), &10);
-    assert_eq!(it.indexable(), 1);
-    assert_eq!(it.idx(0).unwrap(), &11);
-    assert!(it.idx(1).is_none());
-
-    assert_eq!(it.next().unwrap(), &11);
-    assert_eq!(it.indexable(), 0);
-    assert!(it.idx(0).is_none());
-
     assert!(it.next().is_none());
 }
 
@@ -956,15 +787,6 @@ fn test_windowsator() {
 
     let wins: &[&[_]] = &[&[3,4], &[2,3], &[1,2]];
     assert_eq!(v.windows(2).rev().collect::<Vec<&[_]>>(), wins);
-    let mut it = v.windows(2);
-    assert_eq!(it.indexable(), 3);
-    let win: &[_] = &[1,2];
-    assert_eq!(it.idx(0).unwrap(), win);
-    let win: &[_] = &[2,3];
-    assert_eq!(it.idx(1).unwrap(), win);
-    let win: &[_] = &[3,4];
-    assert_eq!(it.idx(2).unwrap(), win);
-    assert_eq!(it.idx(3), None);
 }
 
 #[test]
@@ -989,16 +811,6 @@ fn test_chunksator() {
 
     let chunks: &[&[_]] = &[&[5], &[3,4], &[1,2]];
     assert_eq!(v.chunks(2).rev().collect::<Vec<_>>(), chunks);
-    let mut it = v.chunks(2);
-    assert_eq!(it.indexable(), 3);
-
-    let chunk: &[_] = &[1,2];
-    assert_eq!(it.idx(0).unwrap(), chunk);
-    let chunk: &[_] = &[3,4];
-    assert_eq!(it.idx(1).unwrap(), chunk);
-    let chunk: &[_] = &[5];
-    assert_eq!(it.idx(2).unwrap(), chunk);
-    assert_eq!(it.idx(3), None);
 }
 
 #[test]
@@ -1006,26 +818,6 @@ fn test_chunksator() {
 fn test_chunksator_0() {
     let v = &[1,2,3,4];
     let _it = v.chunks(0);
-}
-
-#[test]
-fn test_move_from() {
-    let mut a = [1,2,3,4,5];
-    let b = vec![6,7,8];
-    assert_eq!(a.move_from(b, 0, 3), 3);
-    assert!(a == [6,7,8,4,5]);
-    let mut a = [7,2,8,1];
-    let b = vec![3,1,4,1,5,9];
-    assert_eq!(a.move_from(b, 0, 6), 4);
-    assert!(a == [3,1,4,1]);
-    let mut a = [1,2,3,4];
-    let b = vec![5,6,7,8,9,0];
-    assert_eq!(a.move_from(b, 2, 3), 1);
-    assert!(a == [7,2,3,4]);
-    let mut a = [1,2,3,4,5];
-    let b = vec![5,6,7,8,9,0];
-    assert_eq!(a[2..4].move_from(b,1,6), 2);
-    assert!(a == [1,2,6,7,5]);
 }
 
 #[test]
@@ -1293,8 +1085,60 @@ fn test_to_vec() {
     assert_eq!(ys, [1, 2, 3]);
 }
 
+#[test]
+fn test_box_slice_clone() {
+    let data = vec![vec![0, 1], vec![0], vec![1]];
+    let data2 = data.clone().into_boxed_slice().clone().to_vec();
+
+    assert_eq!(data, data2);
+}
+
+#[test]
+fn test_box_slice_clone_panics() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::thread::spawn;
+
+    struct Canary {
+        count: Arc<AtomicUsize>,
+        panics: bool
+    }
+
+    impl Drop for Canary {
+        fn drop(&mut self) {
+            self.count.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    impl Clone for Canary {
+        fn clone(&self) -> Self {
+            if self.panics { panic!() }
+
+            Canary {
+                count: self.count.clone(),
+                panics: self.panics
+            }
+        }
+    }
+
+    let drop_count = Arc::new(AtomicUsize::new(0));
+    let canary = Canary { count: drop_count.clone(), panics: false };
+    let panic = Canary { count: drop_count.clone(), panics: true };
+
+    spawn(move || {
+        // When xs is dropped, +5.
+        let xs = vec![canary.clone(), canary.clone(), canary.clone(),
+                      panic, canary].into_boxed_slice();
+
+        // When panic is cloned, +3.
+        xs.clone();
+    }).join().unwrap_err();
+
+    // Total = 8
+    assert_eq!(drop_count.load(Ordering::SeqCst), 8);
+}
+
 mod bench {
-    use std::iter::repeat;
     use std::{mem, ptr};
     use std::__rand::{Rng, thread_rng};
 
@@ -1318,7 +1162,7 @@ mod bench {
 
     #[bench]
     fn mut_iterator(b: &mut Bencher) {
-        let mut v: Vec<_> = repeat(0).take(100).collect();
+        let mut v = vec![0; 100];
 
         b.iter(|| {
             let mut i = 0;
@@ -1339,11 +1183,11 @@ mod bench {
     }
 
     #[bench]
-    fn connect(b: &mut Bencher) {
+    fn join(b: &mut Bencher) {
         let xss: Vec<Vec<i32>> =
             (0..100).map(|i| (0..i).collect()).collect();
         b.iter(|| {
-            xss.connect(&0)
+            xss.join(&0)
         });
     }
 
@@ -1419,7 +1263,7 @@ mod bench {
     #[bench]
     fn zero_1kb_from_elem(b: &mut Bencher) {
         b.iter(|| {
-            repeat(0u8).take(1024).collect::<Vec<_>>()
+            vec![0u8; 1024]
         });
     }
 
@@ -1467,7 +1311,7 @@ mod bench {
     fn random_inserts(b: &mut Bencher) {
         let mut rng = thread_rng();
         b.iter(|| {
-            let mut v: Vec<_> = repeat((0, 0)).take(30).collect();
+            let mut v = vec![(0, 0); 30];
             for _ in 0..100 {
                 let l = v.len();
                 v.insert(rng.gen::<usize>() % (l + 1),
@@ -1479,7 +1323,7 @@ mod bench {
     fn random_removes(b: &mut Bencher) {
         let mut rng = thread_rng();
         b.iter(|| {
-            let mut v: Vec<_> = repeat((0, 0)).take(130).collect();
+            let mut v = vec![(0, 0); 130];
             for _ in 0..100 {
                 let l = v.len();
                 v.remove(rng.gen::<usize>() % l);

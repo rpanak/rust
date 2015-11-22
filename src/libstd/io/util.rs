@@ -10,46 +10,83 @@
 
 #![allow(missing_copy_implementations)]
 
-use prelude::v1::*;
-
 use io::{self, Read, Write, ErrorKind, BufRead};
 
 /// Copies the entire contents of a reader into a writer.
 ///
-/// This function will continuously read data from `r` and then write it into
-/// `w` in a streaming fashion until `r` returns EOF.
+/// This function will continuously read data from `reader` and then
+/// write it into `writer` in a streaming fashion until `reader`
+/// returns EOF.
 ///
-/// On success the total number of bytes that were copied from `r` to `w` is
-/// returned.
+/// On success, the total number of bytes that were copied from
+/// `reader` to `writer` is returned.
 ///
 /// # Errors
 ///
 /// This function will return an error immediately if any call to `read` or
 /// `write` returns an error. All instances of `ErrorKind::Interrupted` are
 /// handled by this function and the underlying operation is retried.
+///
+/// # Examples
+///
+/// ```
+/// use std::io;
+///
+/// # fn foo() -> io::Result<()> {
+/// let mut reader: &[u8] = b"hello";
+/// let mut writer: Vec<u8> = vec![];
+///
+/// try!(io::copy(&mut reader, &mut writer));
+///
+/// assert_eq!(reader, &writer[..]);
+/// # Ok(())
+/// # }
+/// ```
 #[stable(feature = "rust1", since = "1.0.0")]
-pub fn copy<R: Read, W: Write>(r: &mut R, w: &mut W) -> io::Result<u64> {
+pub fn copy<R: ?Sized, W: ?Sized>(reader: &mut R, writer: &mut W) -> io::Result<u64>
+    where R: Read, W: Write
+{
     let mut buf = [0; super::DEFAULT_BUF_SIZE];
     let mut written = 0;
     loop {
-        let len = match r.read(&mut buf) {
+        let len = match reader.read(&mut buf) {
             Ok(0) => return Ok(written),
             Ok(len) => len,
             Err(ref e) if e.kind() == ErrorKind::Interrupted => continue,
             Err(e) => return Err(e),
         };
-        try!(w.write_all(&buf[..len]));
+        try!(writer.write_all(&buf[..len]));
         written += len as u64;
     }
 }
 
 /// A reader which is always at EOF.
+///
+/// This struct is generally created by calling [`empty()`][empty]. Please see
+/// the documentation of `empty()` for more details.
+///
+/// [empty]: fn.empty.html
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct Empty { _priv: () }
 
-/// Creates an instance of an empty reader.
+/// Constructs a new handle to an empty reader.
 ///
 /// All reads from the returned reader will return `Ok(0)`.
+///
+/// # Examples
+///
+/// A slightly sad example of not reading anything into a buffer:
+///
+/// ```
+/// use std::io;
+/// use std::io::Read;
+///
+/// # fn foo() -> io::Result<String> {
+/// let mut buffer = String::new();
+/// try!(io::empty().read_to_string(&mut buffer));
+/// # Ok(buffer)
+/// # }
+/// ```
 #[stable(feature = "rust1", since = "1.0.0")]
 pub fn empty() -> Empty { Empty { _priv: () } }
 
@@ -63,7 +100,12 @@ impl BufRead for Empty {
     fn consume(&mut self, _n: usize) {}
 }
 
-/// A reader which infinitely yields one byte.
+/// A reader which yields one byte over and over and over and over and over and...
+///
+/// This struct is generally created by calling [`repeat()`][repeat]. Please
+/// see the documentation of `repeat()` for more details.
+///
+/// [repeat]: fn.repeat.html
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct Repeat { byte: u8 }
 
@@ -77,7 +119,7 @@ pub fn repeat(byte: u8) -> Repeat { Repeat { byte: byte } }
 #[stable(feature = "rust1", since = "1.0.0")]
 impl Read for Repeat {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        for slot in buf.iter_mut() {
+        for slot in &mut *buf {
             *slot = self.byte;
         }
         Ok(buf.len())
@@ -85,6 +127,11 @@ impl Read for Repeat {
 }
 
 /// A writer which will move data into the void.
+///
+/// This struct is generally created by calling [`sink()`][sink]. Please
+/// see the documentation of `sink()` for more details.
+///
+/// [sink]: fn.sink.html
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct Sink { _priv: () }
 
@@ -106,7 +153,17 @@ mod tests {
     use prelude::v1::*;
 
     use io::prelude::*;
-    use io::{sink, empty, repeat};
+    use io::{copy, sink, empty, repeat};
+
+    #[test]
+    fn copy_copies() {
+        let mut r = repeat(0).take(4);
+        let mut w = sink();
+        assert_eq!(copy(&mut r, &mut w).unwrap(), 4);
+
+        let mut r = repeat(0).take(1 << 17);
+        assert_eq!(copy(&mut r as &mut Read, &mut w as &mut Write).unwrap(), 1 << 17);
+    }
 
     #[test]
     fn sink_sinks() {

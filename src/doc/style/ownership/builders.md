@@ -16,7 +16,7 @@ If `T` is such a data structure, consider introducing a `T` _builder_:
    value. When possible, choose a better name: e.g. `Command` is the builder for
    `Process`.
 2. The builder constructor should take as parameters only the data _required_ to
-   to make a `T`.
+   make a `T`.
 3. The builder should offer a suite of convenient methods for configuration,
    including setting up compound inputs (like slices) incrementally.
    These methods should return `self` to allow chaining.
@@ -32,7 +32,7 @@ treatment of ownership, as described below.
 
 In some cases, constructing the final `T` does not require the builder itself to
 be consumed. The follow variant on
-[`std::io::process::Command`](http://static.rust-lang.org/doc/master/std/io/process/struct.Command.html)
+[`std::process::Command`](https://doc.rust-lang.org/stable/std/process/struct.Command.html)
 is one example:
 
 ```rust
@@ -75,7 +75,7 @@ impl Command {
     }
 
     /// Executes the command as a child process, which is returned.
-    pub fn spawn(&self) -> IoResult<Process> {
+    pub fn spawn(&self) -> std::io::Result<Process> {
         ...
     }
 }

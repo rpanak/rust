@@ -20,7 +20,7 @@ use ptr::P;
 pub fn expand_deriving_default(cx: &mut ExtCtxt,
                                span: Span,
                                mitem: &MetaItem,
-                               item: Annotatable,
+                               item: &Annotatable,
                                push: &mut FnMut(Annotatable))
 {
     let inline = cx.meta_word(span, InternedString::new("inline"));
@@ -31,6 +31,7 @@ pub fn expand_deriving_default(cx: &mut ExtCtxt,
         path: path_std!(cx, core::default::Default),
         additional_bounds: Vec::new(),
         generics: LifetimeBounds::empty(),
+        is_unsafe: false,
         methods: vec!(
             MethodDef {
                 name: "default",
@@ -47,16 +48,11 @@ pub fn expand_deriving_default(cx: &mut ExtCtxt,
         ),
         associated_types: Vec::new(),
     };
-    trait_def.expand(cx, mitem, &item, push)
+    trait_def.expand(cx, mitem, item, push)
 }
 
 fn default_substructure(cx: &mut ExtCtxt, trait_span: Span, substr: &Substructure) -> P<Expr> {
-    let default_ident = vec!(
-        cx.ident_of_std("core"),
-        cx.ident_of("default"),
-        cx.ident_of("Default"),
-        cx.ident_of("default")
-    );
+    let default_ident = cx.std_path(&["default", "Default", "default"]);
     let default_call = |span| cx.expr_call_global(span, default_ident.clone(), Vec::new());
 
     return match *substr.fields {

@@ -13,12 +13,13 @@
 use super::namespace::crate_root_namespace;
 
 use trans::common::CrateContext;
+use middle::def_id::DefId;
+use middle::infer;
 use middle::subst::{self, Substs};
-use middle::ty::{self, Ty, ClosureTyper};
-use syntax::ast;
-use syntax::parse::token;
-use util::ppaux;
+use middle::ty::{self, Ty};
 
+use rustc_front::hir;
+use syntax::ast;
 
 // Compute the name of the type as it should be stored in debuginfo. Does not do
 // any caching, i.e. calling the function twice with the same type will also do
@@ -40,27 +41,27 @@ pub fn push_debuginfo_type_name<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
                                           qualified: bool,
                                           output: &mut String) {
     match t.sty {
-        ty::ty_bool              => output.push_str("bool"),
-        ty::ty_char              => output.push_str("char"),
-        ty::ty_str               => output.push_str("str"),
-        ty::ty_int(ast::TyIs)     => output.push_str("isize"),
-        ty::ty_int(ast::TyI8)    => output.push_str("i8"),
-        ty::ty_int(ast::TyI16)   => output.push_str("i16"),
-        ty::ty_int(ast::TyI32)   => output.push_str("i32"),
-        ty::ty_int(ast::TyI64)   => output.push_str("i64"),
-        ty::ty_uint(ast::TyUs)    => output.push_str("usize"),
-        ty::ty_uint(ast::TyU8)   => output.push_str("u8"),
-        ty::ty_uint(ast::TyU16)  => output.push_str("u16"),
-        ty::ty_uint(ast::TyU32)  => output.push_str("u32"),
-        ty::ty_uint(ast::TyU64)  => output.push_str("u64"),
-        ty::ty_float(ast::TyF32) => output.push_str("f32"),
-        ty::ty_float(ast::TyF64) => output.push_str("f64"),
-        ty::ty_struct(def_id, substs) |
-        ty::ty_enum(def_id, substs) => {
-            push_item_name(cx, def_id, qualified, output);
+        ty::TyBool              => output.push_str("bool"),
+        ty::TyChar              => output.push_str("char"),
+        ty::TyStr               => output.push_str("str"),
+        ty::TyInt(ast::TyIs)    => output.push_str("isize"),
+        ty::TyInt(ast::TyI8)    => output.push_str("i8"),
+        ty::TyInt(ast::TyI16)   => output.push_str("i16"),
+        ty::TyInt(ast::TyI32)   => output.push_str("i32"),
+        ty::TyInt(ast::TyI64)   => output.push_str("i64"),
+        ty::TyUint(ast::TyUs)   => output.push_str("usize"),
+        ty::TyUint(ast::TyU8)   => output.push_str("u8"),
+        ty::TyUint(ast::TyU16)  => output.push_str("u16"),
+        ty::TyUint(ast::TyU32)  => output.push_str("u32"),
+        ty::TyUint(ast::TyU64)  => output.push_str("u64"),
+        ty::TyFloat(ast::TyF32) => output.push_str("f32"),
+        ty::TyFloat(ast::TyF64) => output.push_str("f64"),
+        ty::TyStruct(def, substs) |
+        ty::TyEnum(def, substs) => {
+            push_item_name(cx, def.did, qualified, output);
             push_type_params(cx, substs, output);
         },
-        ty::ty_tup(ref component_types) => {
+        ty::TyTuple(ref component_types) => {
             output.push('(');
             for &component_type in component_types {
                 push_debuginfo_type_name(cx, component_type, true, output);
@@ -72,48 +73,46 @@ pub fn push_debuginfo_type_name<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
             }
             output.push(')');
         },
-        ty::ty_uniq(inner_type) => {
+        ty::TyBox(inner_type) => {
             output.push_str("Box<");
             push_debuginfo_type_name(cx, inner_type, true, output);
             output.push('>');
         },
-        ty::ty_ptr(ty::mt { ty: inner_type, mutbl } ) => {
+        ty::TyRawPtr(ty::TypeAndMut { ty: inner_type, mutbl } ) => {
             output.push('*');
             match mutbl {
-                ast::MutImmutable => output.push_str("const "),
-                ast::MutMutable => output.push_str("mut "),
+                hir::MutImmutable => output.push_str("const "),
+                hir::MutMutable => output.push_str("mut "),
             }
 
             push_debuginfo_type_name(cx, inner_type, true, output);
         },
-        ty::ty_rptr(_, ty::mt { ty: inner_type, mutbl }) => {
+        ty::TyRef(_, ty::TypeAndMut { ty: inner_type, mutbl }) => {
             output.push('&');
-            if mutbl == ast::MutMutable {
+            if mutbl == hir::MutMutable {
                 output.push_str("mut ");
             }
 
             push_debuginfo_type_name(cx, inner_type, true, output);
         },
-        ty::ty_vec(inner_type, optional_length) => {
+        ty::TyArray(inner_type, len) => {
             output.push('[');
             push_debuginfo_type_name(cx, inner_type, true, output);
-
-            match optional_length {
-                Some(len) => {
-                    output.push_str(&format!("; {}", len));
-                }
-                None => { /* nothing to do */ }
-            };
-
+            output.push_str(&format!("; {}", len));
             output.push(']');
         },
-        ty::ty_trait(ref trait_data) => {
-            let principal = ty::erase_late_bound_regions(cx.tcx(), &trait_data.principal);
+        ty::TySlice(inner_type) => {
+            output.push('[');
+            push_debuginfo_type_name(cx, inner_type, true, output);
+            output.push(']');
+        },
+        ty::TyTrait(ref trait_data) => {
+            let principal = cx.tcx().erase_late_bound_regions(&trait_data.principal);
             push_item_name(cx, principal.def_id, false, output);
             push_type_params(cx, principal.substs, output);
         },
-        ty::ty_bare_fn(_, &ty::BareFnTy{ unsafety, abi, ref sig } ) => {
-            if unsafety == ast::Unsafety::Unsafe {
+        ty::TyBareFn(_, &ty::BareFnTy{ unsafety, abi, ref sig } ) => {
+            if unsafety == hir::Unsafety::Unsafe {
                 output.push_str("unsafe ");
             }
 
@@ -125,7 +124,8 @@ pub fn push_debuginfo_type_name<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
 
             output.push_str("fn(");
 
-            let sig = ty::erase_late_bound_regions(cx.tcx(), sig);
+            let sig = cx.tcx().erase_late_bound_regions(sig);
+            let sig = infer::normalize_associated_type(cx.tcx(), &sig);
             if !sig.inputs.is_empty() {
                 for &parameter_type in &sig.inputs {
                     push_debuginfo_type_name(cx, parameter_type, true, output);
@@ -146,7 +146,7 @@ pub fn push_debuginfo_type_name<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
             output.push(')');
 
             match sig.output {
-                ty::FnConverging(result_type) if ty::type_is_nil(result_type) => {}
+                ty::FnConverging(result_type) if result_type.is_nil() => {}
                 ty::FnConverging(result_type) => {
                     output.push_str(" -> ");
                     push_debuginfo_type_name(cx, result_type, true, output);
@@ -156,33 +156,32 @@ pub fn push_debuginfo_type_name<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
                 }
             }
         },
-        ty::ty_closure(..) => {
+        ty::TyClosure(..) => {
             output.push_str("closure");
         }
-        ty::ty_err |
-        ty::ty_infer(_) |
-        ty::ty_projection(..) |
-        ty::ty_param(_) => {
+        ty::TyError |
+        ty::TyInfer(_) |
+        ty::TyProjection(..) |
+        ty::TyParam(_) => {
             cx.sess().bug(&format!("debuginfo: Trying to create type name for \
-                unexpected type: {}", ppaux::ty_to_string(cx.tcx(), t)));
+                unexpected type: {:?}", t));
         }
     }
 
     fn push_item_name(cx: &CrateContext,
-                      def_id: ast::DefId,
+                      def_id: DefId,
                       qualified: bool,
                       output: &mut String) {
-        ty::with_path(cx.tcx(), def_id, |path| {
+        cx.tcx().with_path(def_id, |path| {
             if qualified {
-                if def_id.krate == ast::LOCAL_CRATE {
+                if def_id.is_local() {
                     output.push_str(crate_root_namespace(cx));
                     output.push_str("::");
                 }
 
                 let mut path_element_count = 0;
                 for path_element in path {
-                    let name = token::get_name(path_element.name());
-                    output.push_str(&name);
+                    output.push_str(&path_element.name().as_str());
                     output.push_str("::");
                     path_element_count += 1;
                 }
@@ -194,10 +193,8 @@ pub fn push_debuginfo_type_name<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
                 output.pop();
                 output.pop();
             } else {
-                let name = token::get_name(path.last()
-                                               .expect("debuginfo: Empty item path?")
-                                               .name());
-                output.push_str(&name);
+                let name = path.last().expect("debuginfo: Empty item path?").name();
+                output.push_str(&name.as_str());
             }
         });
     }
@@ -216,7 +213,7 @@ pub fn push_debuginfo_type_name<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
 
         output.push('<');
 
-        for &type_parameter in substs.types.iter() {
+        for &type_parameter in &substs.types {
             push_debuginfo_type_name(cx, type_parameter, true, output);
             output.push_str(", ");
         }
@@ -227,4 +224,3 @@ pub fn push_debuginfo_type_name<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
         output.push('>');
     }
 }
-

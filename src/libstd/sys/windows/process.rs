@@ -19,16 +19,16 @@ use ffi::{OsString, OsStr};
 use fmt;
 use fs;
 use io::{self, Error};
-use libc::{self, c_void};
+use libc::c_void;
 use mem;
 use os::windows::ffi::OsStrExt;
 use path::Path;
 use ptr;
-use sync::{StaticMutex, MUTEX_INIT};
+use sync::StaticMutex;
 use sys::c;
+
 use sys::fs::{OpenOptions, File};
-use sys::handle::Handle;
-use sys::pipe::AnonPipe;
+use sys::handle::{Handle, RawHandle};
 use sys::stdio;
 use sys::{self, cvt};
 use sys_common::{AsInner, FromInner};
@@ -107,9 +107,11 @@ pub struct Process {
 
 pub enum Stdio {
     Inherit,
-    Piped(AnonPipe),
     None,
+    Raw(c::HANDLE),
 }
+
+pub type RawStdio = Handle;
 
 impl Process {
     pub fn spawn(cfg: &Command,
@@ -117,9 +119,6 @@ impl Process {
                  out_handle: Stdio,
                  err_handle: Stdio) -> io::Result<Process>
     {
-        use libc::{TRUE, STARTF_USESTDHANDLES};
-        use libc::{DWORD, STARTUPINFO, CreateProcessW};
-
         // To have the spawning semantics of unix/windows stay the same, we need
         // to read the *child's* PATH if one is provided. See #15149 for more
         // details.
@@ -142,8 +141,8 @@ impl Process {
         });
 
         let mut si = zeroed_startupinfo();
-        si.cb = mem::size_of::<STARTUPINFO>() as DWORD;
-        si.dwFlags = STARTF_USESTDHANDLES;
+        si.cb = mem::size_of::<c::STARTUPINFO>() as c::DWORD;
+        si.dwFlags = c::STARTF_USESTDHANDLES;
 
         let stdin = try!(in_handle.to_handle(c::STD_INPUT_HANDLE));
         let stdout = try!(out_handle.to_handle(c::STD_OUTPUT_HANDLE));
@@ -158,9 +157,9 @@ impl Process {
         cmd_str.push(0); // add null terminator
 
         // stolen from the libuv code.
-        let mut flags = libc::CREATE_UNICODE_ENVIRONMENT;
+        let mut flags = c::CREATE_UNICODE_ENVIRONMENT;
         if cfg.detach {
-            flags |= libc::DETACHED_PROCESS | libc::CREATE_NEW_PROCESS_GROUP;
+            flags |= c::DETACHED_PROCESS | c::CREATE_NEW_PROCESS_GROUP;
         }
 
         let (envp, _data) = make_envp(cfg.env.as_ref());
@@ -169,15 +168,15 @@ impl Process {
         try!(unsafe {
             // `CreateProcess` is racy!
             // http://support.microsoft.com/kb/315939
-            static CREATE_PROCESS_LOCK: StaticMutex = MUTEX_INIT;
+            static CREATE_PROCESS_LOCK: StaticMutex = StaticMutex::new();
             let _lock = CREATE_PROCESS_LOCK.lock();
 
-            cvt(CreateProcessW(ptr::null(),
-                               cmd_str.as_mut_ptr(),
-                               ptr::null_mut(),
-                               ptr::null_mut(),
-                               TRUE, flags, envp, dirp,
-                               &mut si, &mut pi))
+            cvt(c::CreateProcessW(ptr::null(),
+                                  cmd_str.as_mut_ptr(),
+                                  ptr::null_mut(),
+                                  ptr::null_mut(),
+                                  c::TRUE, flags, envp, dirp,
+                                  &mut si, &mut pi))
         });
 
         // We close the thread handle because we don't care about keeping
@@ -189,39 +188,42 @@ impl Process {
     }
 
     pub unsafe fn kill(&self) -> io::Result<()> {
-        try!(cvt(libc::TerminateProcess(self.handle.raw(), 1)));
+        try!(cvt(c::TerminateProcess(self.handle.raw(), 1)));
         Ok(())
     }
 
-    pub fn wait(&self) -> io::Result<ExitStatus> {
-        use libc::{STILL_ACTIVE, INFINITE, WAIT_OBJECT_0};
-        use libc::{GetExitCodeProcess, WaitForSingleObject};
-
+    pub fn id(&self) -> u32 {
         unsafe {
-            loop {
-                let mut status = 0;
-                try!(cvt(GetExitCodeProcess(self.handle.raw(), &mut status)));
-                if status != STILL_ACTIVE {
-                    return Ok(ExitStatus(status as i32));
-                }
-                match WaitForSingleObject(self.handle.raw(), INFINITE) {
-                    WAIT_OBJECT_0 => {}
-                    _ => return Err(Error::last_os_error()),
-                }
-            }
+            c::GetProcessId(self.handle.raw()) as u32
         }
     }
+
+    pub fn wait(&self) -> io::Result<ExitStatus> {
+        unsafe {
+            let res = c::WaitForSingleObject(self.handle.raw(), c::INFINITE);
+            if res != c::WAIT_OBJECT_0 {
+                return Err(Error::last_os_error())
+            }
+            let mut status = 0;
+            try!(cvt(c::GetExitCodeProcess(self.handle.raw(), &mut status)));
+            Ok(ExitStatus(status))
+        }
+    }
+
+    pub fn handle(&self) -> &Handle { &self.handle }
+
+    pub fn into_handle(self) -> Handle { self.handle }
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
-pub struct ExitStatus(i32);
+pub struct ExitStatus(c::DWORD);
 
 impl ExitStatus {
     pub fn success(&self) -> bool {
         self.0 == 0
     }
     pub fn code(&self) -> Option<i32> {
-        Some(self.0)
+        Some(self.0 as i32)
     }
 }
 
@@ -231,8 +233,8 @@ impl fmt::Display for ExitStatus {
     }
 }
 
-fn zeroed_startupinfo() -> libc::types::os::arch::extra::STARTUPINFO {
-    libc::types::os::arch::extra::STARTUPINFO {
+fn zeroed_startupinfo() -> c::STARTUPINFO {
+    c::STARTUPINFO {
         cb: 0,
         lpReserved: ptr::null_mut(),
         lpDesktop: ptr::null_mut(),
@@ -248,14 +250,14 @@ fn zeroed_startupinfo() -> libc::types::os::arch::extra::STARTUPINFO {
         wShowWindow: 0,
         cbReserved2: 0,
         lpReserved2: ptr::null_mut(),
-        hStdInput: libc::INVALID_HANDLE_VALUE,
-        hStdOutput: libc::INVALID_HANDLE_VALUE,
-        hStdError: libc::INVALID_HANDLE_VALUE,
+        hStdInput: c::INVALID_HANDLE_VALUE,
+        hStdOutput: c::INVALID_HANDLE_VALUE,
+        hStdError: c::INVALID_HANDLE_VALUE,
     }
 }
 
-fn zeroed_process_information() -> libc::types::os::arch::extra::PROCESS_INFORMATION {
-    libc::types::os::arch::extra::PROCESS_INFORMATION {
+fn zeroed_process_information() -> c::PROCESS_INFORMATION {
+    c::PROCESS_INFORMATION {
         hProcess: ptr::null_mut(),
         hThread: ptr::null_mut(),
         dwProcessId: 0,
@@ -347,17 +349,15 @@ fn make_dirp(d: Option<&OsString>) -> (*const u16, Vec<u16>) {
 }
 
 impl Stdio {
-    fn to_handle(&self, stdio_id: libc::DWORD) -> io::Result<Handle> {
-        use libc::DUPLICATE_SAME_ACCESS;
-
+    fn to_handle(&self, stdio_id: c::DWORD) -> io::Result<Handle> {
         match *self {
             Stdio::Inherit => {
                 stdio::get(stdio_id).and_then(|io| {
-                    io.handle().duplicate(0, true, DUPLICATE_SAME_ACCESS)
+                    io.handle().duplicate(0, true, c::DUPLICATE_SAME_ACCESS)
                 })
             }
-            Stdio::Piped(ref pipe) => {
-                pipe.handle().duplicate(0, true, DUPLICATE_SAME_ACCESS)
+            Stdio::Raw(handle) => {
+                RawHandle::new(handle).duplicate(0, true, c::DUPLICATE_SAME_ACCESS)
             }
 
             // Similarly to unix, we don't actually leave holes for the
@@ -365,9 +365,9 @@ impl Stdio {
             // equivalents. These equivalents are drawn from libuv's
             // windows process spawning.
             Stdio::None => {
-                let size = mem::size_of::<libc::SECURITY_ATTRIBUTES>();
-                let mut sa = libc::SECURITY_ATTRIBUTES {
-                    nLength: size as libc::DWORD,
+                let size = mem::size_of::<c::SECURITY_ATTRIBUTES>();
+                let mut sa = c::SECURITY_ATTRIBUTES {
+                    nLength: size as c::DWORD,
                     lpSecurityDescriptor: ptr::null_mut(),
                     bInheritHandle: 1,
                 };

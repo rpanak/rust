@@ -11,8 +11,6 @@
 #![allow(missing_docs)]
 #![allow(non_camel_case_types)]
 
-use prelude::v1::*;
-
 use io::{self, ErrorKind};
 use libc;
 use num::One;
@@ -26,10 +24,10 @@ use ops::Neg;
 #[cfg(target_os = "linux")]     pub use os::linux as platform;
 #[cfg(target_os = "macos")]     pub use os::macos as platform;
 #[cfg(target_os = "nacl")]      pub use os::nacl as platform;
+#[cfg(target_os = "netbsd")]    pub use os::netbsd as platform;
 #[cfg(target_os = "openbsd")]   pub use os::openbsd as platform;
 
 pub mod backtrace;
-pub mod c;
 pub mod condvar;
 pub mod ext;
 pub mod fd;
@@ -42,11 +40,27 @@ pub mod pipe;
 pub mod process;
 pub mod rwlock;
 pub mod stack_overflow;
-pub mod sync;
 pub mod thread;
 pub mod thread_local;
 pub mod time;
 pub mod stdio;
+
+#[cfg(not(target_os = "nacl"))]
+pub fn init() {
+    use libc::signal;
+    // By default, some platforms will send a *signal* when an EPIPE error
+    // would otherwise be delivered. This runtime doesn't install a SIGPIPE
+    // handler, causing it to kill the program, which isn't exactly what we
+    // want!
+    //
+    // Hence, we set SIGPIPE to ignore when the program starts up in order
+    // to prevent this problem.
+    unsafe {
+        assert!(signal(libc::SIGPIPE, libc::SIG_IGN) != !0);
+    }
+}
+#[cfg(target_os = "nacl")]
+pub fn init() { }
 
 pub fn decode_error_kind(errno: i32) -> ErrorKind {
     match errno as libc::c_int {
@@ -62,7 +76,7 @@ pub fn decode_error_kind(errno: i32) -> ErrorKind {
         libc::EINTR => ErrorKind::Interrupted,
         libc::EINVAL => ErrorKind::InvalidInput,
         libc::ETIMEDOUT => ErrorKind::TimedOut,
-        libc::consts::os::posix88::EEXIST => ErrorKind::AlreadyExists,
+        libc::EEXIST => ErrorKind::AlreadyExists,
 
         // These two constants can have the same value on some systems,
         // but different values on others, so we can't use a match
@@ -83,7 +97,6 @@ pub fn cvt<T: One + PartialEq + Neg<Output=T>>(t: T) -> io::Result<T> {
     }
 }
 
-#[allow(deprecated)]
 pub fn cvt_r<T, F>(mut f: F) -> io::Result<T>
     where T: One + PartialEq + Neg<Output=T>, F: FnMut() -> T
 {
@@ -92,12 +105,5 @@ pub fn cvt_r<T, F>(mut f: F) -> io::Result<T>
             Err(ref e) if e.kind() == ErrorKind::Interrupted => {}
             other => return other,
         }
-    }
-}
-
-pub fn ms_to_timeval(ms: u64) -> libc::timeval {
-    libc::timeval {
-        tv_sec: (ms / 1000) as libc::time_t,
-        tv_usec: ((ms % 1000) * 1000) as libc::suseconds_t,
     }
 }

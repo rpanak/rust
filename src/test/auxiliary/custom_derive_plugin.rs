@@ -37,7 +37,7 @@ pub fn plugin_registrar(reg: &mut Registry) {
 fn expand(cx: &mut ExtCtxt,
           span: Span,
           mitem: &ast::MetaItem,
-          item: Annotatable,
+          item: &Annotatable,
           push: &mut FnMut(Annotatable)) {
     let trait_def = TraitDef {
         span: span,
@@ -46,6 +46,7 @@ fn expand(cx: &mut ExtCtxt,
         additional_bounds: vec![],
         generics: LifetimeBounds::empty(),
         associated_types: vec![],
+        is_unsafe: false,
         methods: vec![
             MethodDef {
                 name: "total_sum",
@@ -71,5 +72,5 @@ fn expand(cx: &mut ExtCtxt,
         ],
     };
 
-    trait_def.expand(cx, mitem, &item, push)
+    trait_def.expand(cx, mitem, item, push)
 }

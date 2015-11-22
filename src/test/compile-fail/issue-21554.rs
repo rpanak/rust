@@ -11,5 +11,7 @@
 struct Inches(i32);
 
 fn main() {
-    Inches as f32; //~ ERROR illegal cast; cast through an integer first
+    Inches as f32;
+    //~^ ERROR casting
+    //~^^ cast through a usize first
 }

@@ -12,8 +12,6 @@ use prelude::v1::*;
 use io::prelude::*;
 
 use io::{self, Cursor};
-use iter::repeat;
-use libc;
 use ptr;
 use str;
 use sync::Mutex;
@@ -35,9 +33,9 @@ pub struct Stdin {
 pub struct Stdout(Output);
 pub struct Stderr(Output);
 
-pub fn get(handle: libc::DWORD) -> io::Result<Output> {
+pub fn get(handle: c::DWORD) -> io::Result<Output> {
     let handle = unsafe { c::GetStdHandle(handle) };
-    if handle == libc::INVALID_HANDLE_VALUE {
+    if handle == c::INVALID_HANDLE_VALUE {
         Err(io::Error::last_os_error())
     } else if handle.is_null() {
         Err(io::Error::new(io::ErrorKind::Other,
@@ -64,7 +62,7 @@ fn write(out: &Output, data: &[u8]) -> io::Result<usize> {
     let mut written = 0;
     try!(cvt(unsafe {
         c::WriteConsoleW(handle,
-                         utf16.as_ptr() as libc::LPCVOID,
+                         utf16.as_ptr() as c::LPCVOID,
                          utf16.len() as u32,
                          &mut written,
                          ptr::null_mut())
@@ -77,11 +75,13 @@ fn write(out: &Output, data: &[u8]) -> io::Result<usize> {
 }
 
 impl Stdin {
-    pub fn new() -> Stdin {
-        Stdin {
-            handle: get(c::STD_INPUT_HANDLE).unwrap(),
-            utf8: Mutex::new(Cursor::new(Vec::new())),
-        }
+    pub fn new() -> io::Result<Stdin> {
+        get(c::STD_INPUT_HANDLE).map(|handle| {
+            Stdin {
+                handle: handle,
+                utf8: Mutex::new(Cursor::new(Vec::new())),
+            }
+        })
     }
 
     pub fn read(&self, buf: &mut [u8]) -> io::Result<usize> {
@@ -92,11 +92,11 @@ impl Stdin {
         let mut utf8 = self.utf8.lock().unwrap();
         // Read more if the buffer is empty
         if utf8.position() as usize == utf8.get_ref().len() {
-            let mut utf16: Vec<u16> = repeat(0u16).take(0x1000).collect();
+            let mut utf16 = vec![0u16; 0x1000];
             let mut num = 0;
             try!(cvt(unsafe {
                 c::ReadConsoleW(handle,
-                                utf16.as_mut_ptr() as libc::LPVOID,
+                                utf16.as_mut_ptr() as c::LPVOID,
                                 utf16.len() as u32,
                                 &mut num,
                                 ptr::null_mut())
@@ -116,8 +116,8 @@ impl Stdin {
 }
 
 impl Stdout {
-    pub fn new() -> Stdout {
-        Stdout(get(c::STD_OUTPUT_HANDLE).unwrap())
+    pub fn new() -> io::Result<Stdout> {
+        get(c::STD_OUTPUT_HANDLE).map(Stdout)
     }
 
     pub fn write(&self, data: &[u8]) -> io::Result<usize> {
@@ -126,8 +126,8 @@ impl Stdout {
 }
 
 impl Stderr {
-    pub fn new() -> Stderr {
-        Stderr(get(c::STD_ERROR_HANDLE).unwrap())
+    pub fn new() -> io::Result<Stderr> {
+        get(c::STD_ERROR_HANDLE).map(Stderr)
     }
 
     pub fn write(&self, data: &[u8]) -> io::Result<usize> {
@@ -146,7 +146,7 @@ impl io::Write for Stderr {
 }
 
 impl NoClose {
-    fn new(handle: libc::HANDLE) -> NoClose {
+    fn new(handle: c::HANDLE) -> NoClose {
         NoClose(Some(Handle::new(handle)))
     }
 
@@ -170,5 +170,5 @@ impl Output {
 }
 
 fn invalid_encoding() -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidInput, "text was not valid unicode")
+    io::Error::new(io::ErrorKind::InvalidData, "text was not valid unicode")
 }

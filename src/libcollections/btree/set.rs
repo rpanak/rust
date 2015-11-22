@@ -11,8 +11,6 @@
 // This is pretty much entirely stolen from TreeSet, since BTreeMap has an identical interface
 // to TreeMap
 
-use core::prelude::*;
-
 use core::cmp::Ordering::{self, Less, Greater, Equal};
 use core::fmt::Debug;
 use core::fmt;
@@ -21,6 +19,7 @@ use core::ops::{BitOr, BitAnd, BitXor, Sub};
 
 use borrow::Borrow;
 use btree_map::{BTreeMap, Keys};
+use super::Recover;
 use Bound;
 
 // FIXME(conventions): implement bounded iterators
@@ -90,6 +89,7 @@ impl<T: Ord> BTreeSet<T> {
     /// # Examples
     ///
     /// ```
+    /// # #![allow(unused_mut)]
     /// use std::collections::BTreeSet;
     ///
     /// let mut set: BTreeSet<i32> = BTreeSet::new();
@@ -102,8 +102,11 @@ impl<T: Ord> BTreeSet<T> {
     /// Makes a new BTreeSet with the given B.
     ///
     /// B cannot be less than 2.
-    #[unstable(feature = "collections",
-               reason = "probably want this to be on the type, eventually")]
+    #[unstable(feature = "btree_b",
+               reason = "probably want this to be on the type, eventually",
+               issue = "27795")]
+    #[deprecated(since = "1.4.0", reason = "niche API")]
+    #[allow(deprecated)]
     pub fn with_b(b: usize) -> BTreeSet<T> {
         BTreeSet { map: BTreeMap::with_b(b) }
     }
@@ -115,7 +118,6 @@ impl<T> BTreeSet<T> {
     /// # Examples
     ///
     /// ```
-    /// # #![feature(core)]
     /// use std::collections::BTreeSet;
     ///
     /// let set: BTreeSet<usize> = [1, 2, 3, 4].iter().cloned().collect();
@@ -124,7 +126,7 @@ impl<T> BTreeSet<T> {
     ///     println!("{}", x);
     /// }
     ///
-    /// let v: Vec<usize> = set.iter().cloned().collect();
+    /// let v: Vec<_> = set.iter().cloned().collect();
     /// assert_eq!(v, [1, 2, 3, 4]);
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
@@ -142,7 +144,8 @@ impl<T: Ord> BTreeSet<T> {
     /// # Examples
     ///
     /// ```
-    /// # #![feature(collections)]
+    /// #![feature(btree_range, collections_bound)]
+    ///
     /// use std::collections::BTreeSet;
     /// use std::collections::Bound::{Included, Unbounded};
     ///
@@ -155,9 +158,14 @@ impl<T: Ord> BTreeSet<T> {
     /// }
     /// assert_eq!(Some(&5), set.range(Included(&4), Unbounded).next());
     /// ```
-    #[unstable(feature = "collections",
-               reason = "matches collection reform specification, waiting for dust to settle")]
-    pub fn range<'a>(&'a self, min: Bound<&T>, max: Bound<&T>) -> Range<'a, T> {
+    #[unstable(feature = "btree_range",
+               reason = "matches collection reform specification, waiting for dust to settle",
+               issue = "27787")]
+    pub fn range<'a, Min: ?Sized + Ord = T, Max: ?Sized + Ord = T>(&'a self, min: Bound<&Min>,
+                                                                   max: Bound<&Max>)
+        -> Range<'a, T> where
+        T: Borrow<Min> + Borrow<Max>,
+    {
         fn first<A, B>((a, _): (A, B)) -> A { a }
         let first: fn((&'a T, &'a ())) -> &'a T = first; // coerce to fn pointer
 
@@ -171,7 +179,6 @@ impl<T: Ord> BTreeSet<T> {
     /// # Examples
     ///
     /// ```
-    /// # #![feature(core)]
     /// use std::collections::BTreeSet;
     ///
     /// let mut a = BTreeSet::new();
@@ -182,7 +189,7 @@ impl<T: Ord> BTreeSet<T> {
     /// b.insert(2);
     /// b.insert(3);
     ///
-    /// let diff: Vec<usize> = a.difference(&b).cloned().collect();
+    /// let diff: Vec<_> = a.difference(&b).cloned().collect();
     /// assert_eq!(diff, [1]);
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
@@ -195,7 +202,6 @@ impl<T: Ord> BTreeSet<T> {
     /// # Examples
     ///
     /// ```
-    /// # #![feature(core)]
     /// use std::collections::BTreeSet;
     ///
     /// let mut a = BTreeSet::new();
@@ -206,7 +212,7 @@ impl<T: Ord> BTreeSet<T> {
     /// b.insert(2);
     /// b.insert(3);
     ///
-    /// let sym_diff: Vec<usize> = a.symmetric_difference(&b).cloned().collect();
+    /// let sym_diff: Vec<_> = a.symmetric_difference(&b).cloned().collect();
     /// assert_eq!(sym_diff, [1, 3]);
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
@@ -220,7 +226,6 @@ impl<T: Ord> BTreeSet<T> {
     /// # Examples
     ///
     /// ```
-    /// # #![feature(core)]
     /// use std::collections::BTreeSet;
     ///
     /// let mut a = BTreeSet::new();
@@ -231,7 +236,7 @@ impl<T: Ord> BTreeSet<T> {
     /// b.insert(2);
     /// b.insert(3);
     ///
-    /// let intersection: Vec<usize> = a.intersection(&b).cloned().collect();
+    /// let intersection: Vec<_> = a.intersection(&b).cloned().collect();
     /// assert_eq!(intersection, [2]);
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
@@ -245,7 +250,6 @@ impl<T: Ord> BTreeSet<T> {
     /// # Examples
     ///
     /// ```
-    /// # #![feature(core)]
     /// use std::collections::BTreeSet;
     ///
     /// let mut a = BTreeSet::new();
@@ -254,7 +258,7 @@ impl<T: Ord> BTreeSet<T> {
     /// let mut b = BTreeSet::new();
     /// b.insert(2);
     ///
-    /// let union: Vec<usize> = a.union(&b).cloned().collect();
+    /// let union: Vec<_> = a.union(&b).cloned().collect();
     /// assert_eq!(union, [1, 2]);
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
@@ -318,7 +322,6 @@ impl<T: Ord> BTreeSet<T> {
     /// # Examples
     ///
     /// ```
-    /// # #![feature(core)]
     /// use std::collections::BTreeSet;
     ///
     /// let set: BTreeSet<_> = [1, 2, 3].iter().cloned().collect();
@@ -330,13 +333,22 @@ impl<T: Ord> BTreeSet<T> {
         self.map.contains_key(value)
     }
 
+    /// Returns a reference to the value in the set, if any, that is equal to the given value.
+    ///
+    /// The value may be any borrowed form of the set's value type,
+    /// but the ordering on the borrowed form *must* match the
+    /// ordering on the value type.
+    #[unstable(feature = "set_recovery", issue = "28050")]
+    pub fn get<Q: ?Sized>(&self, value: &Q) -> Option<&T> where T: Borrow<Q>, Q: Ord {
+        Recover::get(&self.map, value)
+    }
+
     /// Returns `true` if the set has no elements in common with `other`.
     /// This is equivalent to checking for an empty intersection.
     ///
     /// # Examples
     ///
     /// ```
-    /// # #![feature(core)]
     /// use std::collections::BTreeSet;
     ///
     /// let a: BTreeSet<_> = [1, 2, 3].iter().cloned().collect();
@@ -358,7 +370,6 @@ impl<T: Ord> BTreeSet<T> {
     /// # Examples
     ///
     /// ```
-    /// # #![feature(core)]
     /// use std::collections::BTreeSet;
     ///
     /// let sup: BTreeSet<_> = [1, 2, 3].iter().cloned().collect();
@@ -401,7 +412,6 @@ impl<T: Ord> BTreeSet<T> {
     /// # Examples
     ///
     /// ```
-    /// # #![feature(core)]
     /// use std::collections::BTreeSet;
     ///
     /// let sub: BTreeSet<_> = [1, 2].iter().cloned().collect();
@@ -421,8 +431,14 @@ impl<T: Ord> BTreeSet<T> {
         other.is_subset(self)
     }
 
-    /// Adds a value to the set. Returns `true` if the value was not already
-    /// present in the set.
+    /// Adds a value to the set.
+    ///
+    /// If the set did not have a value present, `true` is returned.
+    ///
+    /// If the set did have this key present, that value is returned, and the
+    /// entry is not updated. See the [module-level documentation] for more.
+    ///
+    /// [module-level documentation]: index.html#insert-and-complex-keys
     ///
     /// # Examples
     ///
@@ -438,6 +454,13 @@ impl<T: Ord> BTreeSet<T> {
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn insert(&mut self, value: T) -> bool {
         self.map.insert(value, ()).is_none()
+    }
+
+    /// Adds a value to the set, replacing the existing value, if any, that is equal to the given
+    /// one. Returns the replaced value.
+    #[unstable(feature = "set_recovery", issue = "28050")]
+    pub fn replace(&mut self, value: T) -> Option<T> {
+        Recover::replace(&mut self.map, value)
     }
 
     /// Removes a value from the set. Returns `true` if the value was
@@ -462,6 +485,16 @@ impl<T: Ord> BTreeSet<T> {
     pub fn remove<Q: ?Sized>(&mut self, value: &Q) -> bool where T: Borrow<Q>, Q: Ord {
         self.map.remove(value).is_some()
     }
+
+    /// Removes and returns the value in the set, if any, that is equal to the given one.
+    ///
+    /// The value may be any borrowed form of the set's value type,
+    /// but the ordering on the borrowed form *must* match the
+    /// ordering on the value type.
+    #[unstable(feature = "set_recovery", issue = "28050")]
+    pub fn take<Q: ?Sized>(&mut self, value: &Q) -> Option<T> where T: Borrow<Q>, Q: Ord {
+        Recover::take(&mut self.map, value)
+    }
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -483,12 +516,11 @@ impl<T> IntoIterator for BTreeSet<T> {
     /// # Examples
     ///
     /// ```
-    /// # #![feature(core)]
     /// use std::collections::BTreeSet;
     ///
     /// let set: BTreeSet<usize> = [1, 2, 3, 4].iter().cloned().collect();
     ///
-    /// let v: Vec<usize> = set.into_iter().collect();
+    /// let v: Vec<_> = set.into_iter().collect();
     /// assert_eq!(v, [1, 2, 3, 4]);
     /// ```
     fn into_iter(self) -> IntoIter<T> {
@@ -519,9 +551,15 @@ impl<T: Ord> Extend<T> for BTreeSet<T> {
     }
 }
 
+#[stable(feature = "extend_ref", since = "1.2.0")]
+impl<'a, T: 'a + Ord + Copy> Extend<&'a T> for BTreeSet<T> {
+    fn extend<I: IntoIterator<Item=&'a T>>(&mut self, iter: I) {
+        self.extend(iter.into_iter().cloned());
+    }
+}
+
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<T: Ord> Default for BTreeSet<T> {
-    #[stable(feature = "rust1", since = "1.0.0")]
     fn default() -> BTreeSet<T> {
         BTreeSet::new()
     }

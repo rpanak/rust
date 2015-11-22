@@ -58,14 +58,13 @@ impl<T> SmallVector<T> {
         SmallVector { repr: Many(vs) }
     }
 
-    pub fn as_slice<'a>(&'a self) -> &'a [T] {
+    pub fn as_slice(&self) -> &[T] {
         match self.repr {
             Zero => {
                 let result: &[T] = &[];
                 result
             }
             One(ref v) => {
-                // FIXME: Could be replaced with `slice::ref_slice(v)` when it is stable.
                 unsafe { slice::from_raw_parts(v, 1) }
             }
             Many(ref vs) => vs
@@ -106,7 +105,7 @@ impl<T> SmallVector<T> {
         }
     }
 
-    pub fn get<'a>(&'a self, idx: usize) -> &'a T {
+    pub fn get(&self, idx: usize) -> &T {
         match self.repr {
             One(ref v) if idx == 0 => v,
             Many(ref vs) => &vs[idx],
@@ -129,7 +128,7 @@ impl<T> SmallVector<T> {
     }
 
     /// Deprecated: use `into_iter`.
-    #[unstable(feature = "rustc_private")]
+    #[unstable(feature = "rustc_private", issue = "0")]
     #[deprecated(since = "1.0.0", reason = "use into_iter")]
     pub fn move_iter(self) -> IntoIter<T> {
         self.into_iter()

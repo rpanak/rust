@@ -25,9 +25,9 @@
 //!
 //! Rust's collections can be grouped into four major categories:
 //!
-//! * Sequences: `Vec`, `VecDeque`, `LinkedList`, `BitVec`
-//! * Maps: `HashMap`, `BTreeMap`, `VecMap`
-//! * Sets: `HashSet`, `BTreeSet`, `BitSet`
+//! * Sequences: `Vec`, `VecDeque`, `LinkedList`
+//! * Maps: `HashMap`, `BTreeMap`
+//! * Sets: `HashSet`, `BTreeSet`
 //! * Misc: `BinaryHeap`
 //!
 //! # When Should You Use Which Collection?
@@ -66,25 +66,14 @@
 //! ### Use a `BTreeMap` when:
 //! * You're interested in what the smallest or largest key-value pair is.
 //! * You want to find the largest or smallest key that is smaller or larger
-//!   than something
+//!   than something.
 //! * You want to be able to get all of the entries in order on-demand.
 //! * You want a sorted map.
-//!
-//! ### Use a `VecMap` when:
-//! * You want a `HashMap` but with known to be small `usize` keys.
-//! * You want a `BTreeMap`, but with known to be small `usize` keys.
 //!
 //! ### Use the `Set` variant of any of these `Map`s when:
 //! * You just want to remember which keys you've seen.
 //! * There is no meaningful value to associate with your keys.
 //! * You just want a set.
-//!
-//! ### Use a `BitVec` when:
-//! * You want to store an unbounded number of booleans in a small space.
-//! * You want a bit vector.
-//!
-//! ### Use a `BitSet` when:
-//! * You want a `BitVec`, but want `Set` properties
 //!
 //! ### Use a `BinaryHeap` when:
 //!
@@ -123,31 +112,20 @@
 //! | Vec          | O(1)           | O(n-i)*         | O(n-i)         | O(m)*  | O(n-i)         |
 //! | VecDeque     | O(1)           | O(min(i, n-i))* | O(min(i, n-i)) | O(m)*  | O(min(i, n-i)) |
 //! | LinkedList   | O(min(i, n-i)) | O(min(i, n-i))  | O(min(i, n-i)) | O(1)   | O(min(i, n-i)) |
-//! | BitVec       | O(1)           | O(n-i)*         | O(n-i)         | O(m)*  | O(n-i)         |
 //!
 //! Note that where ties occur, Vec is generally going to be faster than VecDeque, and VecDeque
-//! is generally going to be faster than LinkedList. BitVec is not a general purpose collection, and
-//! therefore cannot reasonably be compared.
+//! is generally going to be faster than LinkedList.
 //!
 //! ## Maps
 //!
-//! For Sets, all operations have the cost of the equivalent Map operation. For
-//! BitSet,
-//! refer to VecMap.
+//! For Sets, all operations have the cost of the equivalent Map operation.
 //!
 //! |          | get       | insert   | remove   | predecessor |
 //! |----------|-----------|----------|----------|-------------|
 //! | HashMap  | O(1)~     | O(1)~*   | O(1)~    | N/A         |
 //! | BTreeMap | O(log n)  | O(log n) | O(log n) | O(log n)    |
-//! | VecMap   | O(1)      | O(1)?    | O(1)     | O(n)        |
 //!
-//! Note that VecMap is *incredibly* inefficient in terms of space. The O(1)
-//! insertion time assumes space for the element is already allocated.
-//! Otherwise, a large key may require a massive reallocation, with no direct
-//! relation to the number of elements in the collection.  VecMap should only be
-//! seriously considered for small keys.
-//!
-//! Note also that BTreeMap's precise preformance depends on the value of B.
+//! Note that BTreeMap's precise performance depends on the value of B.
 //!
 //! # Correct and Efficient Usage of Collections
 //!
@@ -252,6 +230,7 @@
 //! contents by-value. This is great when the collection itself is no longer
 //! needed, and the values are needed elsewhere. Using `extend` with `into_iter`
 //! is the main way that contents of one collection are moved into another.
+//! `extend` automatically calls `into_iter`, and takes any `T: IntoIterator`.
 //! Calling `collect` on an iterator itself is also a great way to convert one
 //! collection into another. Both of these methods should internally use the
 //! capacity management tools discussed in the previous section to do this as
@@ -260,7 +239,7 @@
 //! ```
 //! let mut vec1 = vec![1, 2, 3, 4];
 //! let vec2 = vec![10, 20, 30, 40];
-//! vec1.extend(vec2.into_iter());
+//! vec1.extend(vec2);
 //! ```
 //!
 //! ```
@@ -308,7 +287,7 @@
 //! If a `Vacant(entry)` is yielded, then the key *was not* found. In this case
 //! the only valid operation is to `insert` a value into the entry. When this is
 //! done, the vacant entry is consumed and converted into a mutable reference to
-//! the the value that was inserted. This allows for further manipulation of the
+//! the value that was inserted. This allows for further manipulation of the
 //! value beyond the lifetime of the search itself. This is useful if complex
 //! logic needs to be performed on the value regardless of whether the value was
 //! just inserted.
@@ -339,7 +318,7 @@
 //! assert_eq!(count.get(&'s'), Some(&8));
 //!
 //! println!("Number of occurrences of each character");
-//! for (char, count) in count.iter() {
+//! for (char, count) in &count {
 //!     println!("{}: {}", char, count);
 //! }
 //! ```
@@ -353,8 +332,8 @@
 //! ```
 //! use std::collections::btree_map::BTreeMap;
 //!
-//! // A client of the bar. They have an id and a blood alcohol level.
-//! struct Person { id: u32, blood_alcohol: f32 }
+//! // A client of the bar. They have a blood alcohol level.
+//! struct Person { blood_alcohol: f32 }
 //!
 //! // All the orders made to the bar, by client id.
 //! let orders = vec![1,2,1,2,3,4,1,2,2,3,4,1,1,1];
@@ -362,10 +341,10 @@
 //! // Our clients.
 //! let mut blood_alcohol = BTreeMap::new();
 //!
-//! for id in orders.into_iter() {
+//! for id in orders {
 //!     // If this is the first time we've seen this customer, initialize them
 //!     // with no blood alcohol. Otherwise, just retrieve them.
-//!     let person = blood_alcohol.entry(id).or_insert(Person{id: id, blood_alcohol: 0.0});
+//!     let person = blood_alcohol.entry(id).or_insert(Person { blood_alcohol: 0.0 });
 //!
 //!     // Reduce their blood alcohol level. It takes time to order and drink a beer!
 //!     person.blood_alcohol *= 0.9;
@@ -373,24 +352,76 @@
 //!     // Check if they're sober enough to have another beer.
 //!     if person.blood_alcohol > 0.3 {
 //!         // Too drunk... for now.
-//!         println!("Sorry {}, I have to cut you off", person.id);
+//!         println!("Sorry {}, I have to cut you off", id);
 //!     } else {
 //!         // Have another!
 //!         person.blood_alcohol += 0.1;
 //!     }
 //! }
 //! ```
+//!
+//! # Insert and complex keys
+//!
+//! If we have a more complex key, calls to `insert()` will
+//! not update the value of the key. For example:
+//!
+//! ```
+//! use std::cmp::Ordering;
+//! use std::collections::BTreeMap;
+//! use std::hash::{Hash, Hasher};
+//!
+//! #[derive(Debug)]
+//! struct Foo {
+//!     a: u32,
+//!     b: &'static str,
+//! }
+//!
+//! // we will compare `Foo`s by their `a` value only.
+//! impl PartialEq for Foo {
+//!     fn eq(&self, other: &Self) -> bool { self.a == other.a }
+//! }
+//!
+//! impl Eq for Foo {}
+//!
+//! // we will hash `Foo`s by their `a` value only.
+//! impl Hash for Foo {
+//!     fn hash<H: Hasher>(&self, h: &mut H) { self.a.hash(h); }
+//! }
+//!
+//! impl PartialOrd for Foo {
+//!     fn partial_cmp(&self, other: &Self) -> Option<Ordering> { self.a.partial_cmp(&other.a) }
+//! }
+//!
+//! impl Ord for Foo {
+//!     fn cmp(&self, other: &Self) -> Ordering { self.a.cmp(&other.a) }
+//! }
+//!
+//! let mut map = BTreeMap::new();
+//! map.insert(Foo { a: 1, b: "baz" }, ());
+//!
+//! // We already have a Foo with an a of 1, so this will be updating the value.
+//! map.insert(Foo { a: 1, b: "xyz" }, ());
+//!
+//! // ... but the key hasn't changed. b is still "baz", not "xyz"
+//! assert_eq!(map.keys().next().unwrap().b, "baz");
+//! ```
 
 #![stable(feature = "rust1", since = "1.0.0")]
 
+#[stable(feature = "rust1", since = "1.0.0")]
 pub use core_collections::Bound;
-pub use core_collections::{BinaryHeap, BitVec, BitSet, BTreeMap, BTreeSet};
-pub use core_collections::{LinkedList, VecDeque, VecMap};
+#[stable(feature = "rust1", since = "1.0.0")]
+pub use core_collections::{BinaryHeap, BTreeMap, BTreeSet};
+#[stable(feature = "rust1", since = "1.0.0")]
+pub use core_collections::{LinkedList, VecDeque};
+#[stable(feature = "rust1", since = "1.0.0")]
+pub use core_collections::{binary_heap, btree_map, btree_set};
+#[stable(feature = "rust1", since = "1.0.0")]
+pub use core_collections::{linked_list, vec_deque};
 
-pub use core_collections::{binary_heap, bit_vec, bit_set, btree_map, btree_set};
-pub use core_collections::{linked_list, vec_deque, vec_map};
-
+#[stable(feature = "rust1", since = "1.0.0")]
 pub use self::hash_map::HashMap;
+#[stable(feature = "rust1", since = "1.0.0")]
 pub use self::hash_set::HashSet;
 
 mod hash;
@@ -398,18 +429,21 @@ mod hash;
 #[stable(feature = "rust1", since = "1.0.0")]
 pub mod hash_map {
     //! A hashmap
+    #[stable(feature = "rust1", since = "1.0.0")]
     pub use super::hash::map::*;
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
 pub mod hash_set {
     //! A hashset
+    #[stable(feature = "rust1", since = "1.0.0")]
     pub use super::hash::set::*;
 }
 
 /// Experimental support for providing custom hash algorithms to a HashMap and
 /// HashSet.
-#[unstable(feature = "std_misc", reason = "module was recently added")]
+#[unstable(feature = "hashmap_hasher", reason = "module was recently added",
+           issue = "27713")]
 pub mod hash_state {
     pub use super::hash::state::*;
 }

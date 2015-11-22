@@ -41,14 +41,10 @@
 // no-pretty-expanded FIXME #15189
 
 #![allow(non_snake_case)]
-#![feature(unboxed_closures, core, os, scoped)]
+#![feature(unboxed_closures, iter_arith, core_simd, scoped)]
 
-use std::iter::repeat;
 use std::thread;
-use std::mem;
-use std::os;
 use std::env;
-use std::raw::Repr;
 use std::simd::f64x2;
 
 fn main() {
@@ -65,7 +61,7 @@ fn main() {
 
 fn spectralnorm(n: usize) -> f64 {
     assert!(n % 2 == 0, "only even lengths are accepted");
-    let mut u = repeat(1.0).take(n).collect::<Vec<_>>();
+    let mut u = vec![1.0; n];
     let mut v = u.clone();
     let mut tmp = v.clone();
     for _ in 0..10 {
@@ -95,7 +91,7 @@ fn mult<F>(v: &[f64], out: &mut [f64], start: usize, a: F)
         for (j, chunk) in v.chunks(2).enumerate().map(|(j, s)| (2 * j, s)) {
             let top = f64x2(chunk[0], chunk[1]);
             let bot = f64x2(a(i, j), a(i, j + 1));
-            sum += top / bot;
+            sum = sum + top / bot;
         }
         let f64x2(a, b) = sum;
         *slot = a + b;
@@ -107,7 +103,7 @@ fn A(i: usize, j: usize) -> f64 {
 }
 
 fn dot(v: &[f64], u: &[f64]) -> f64 {
-    v.iter().zip(u.iter()).map(|(a, b)| *a * *b).sum()
+    v.iter().zip(u).map(|(a, b)| *a * *b).sum()
 }
 
 
@@ -118,11 +114,10 @@ fn parallel<'a,T, F>(v: &mut [T], ref f: F)
                   where T: Send + Sync + 'a,
                         F: Fn(usize, &mut [T]) + Sync + 'a {
     // FIXME: pick a more appropriate parallel factor
+    // FIXME: replace with thread::scoped when it exists again
     let parallelism = 4;
     let size = v.len() / parallelism + 1;
     v.chunks_mut(size).enumerate().map(|(i, chunk)| {
-        thread::scoped(move|| {
-            f(i * size, chunk)
-        })
+        f(i * size, chunk)
     }).collect::<Vec<_>>();
 }

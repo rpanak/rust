@@ -11,18 +11,23 @@
 //! Implementations of things like `Eq` for fixed-length arrays
 //! up to a certain length. Eventually we should able to generalize
 //! to all lengths.
+//!
+//! *[See also the array primitive type](../primitive.array.html).*
 
-#![unstable(feature = "core")] // not yet reviewed
+#![unstable(feature = "fixed_size_array",
+            reason = "traits and impls are better expressed through generic \
+                      integer constants",
+            issue = "27778")]
 
-#![doc(primitive = "array")]
-
+use borrow::{Borrow, BorrowMut};
 use clone::Clone;
 use cmp::{PartialEq, Eq, PartialOrd, Ord, Ordering};
 use convert::{AsRef, AsMut};
+use default::Default;
 use fmt;
 use hash::{Hash, self};
 use iter::IntoIterator;
-use marker::{Copy, Sized};
+use marker::{Copy, Sized, Unsize};
 use option::Option;
 use slice::{Iter, IterMut, SliceExt};
 
@@ -30,32 +35,37 @@ use slice::{Iter, IterMut, SliceExt};
 ///
 /// This trait can be used to implement other traits on fixed-size arrays
 /// without causing much metadata bloat.
-#[unstable(feature = "core")]
-pub trait FixedSizeArray<T> {
+///
+/// The trait is marked unsafe in order to restrict implementors to fixed-size
+/// arrays. User of this trait can assume that implementors have the exact
+/// layout in memory of a fixed size array (for example, for unsafe
+/// initialization).
+///
+/// Note that the traits AsRef and AsMut provide similar methods for types that
+/// may not be fixed-size arrays. Implementors should prefer those traits
+/// instead.
+pub unsafe trait FixedSizeArray<T> {
     /// Converts the array to immutable slice
     fn as_slice(&self) -> &[T];
     /// Converts the array to mutable slice
     fn as_mut_slice(&mut self) -> &mut [T];
 }
 
+unsafe impl<T, A: Unsize<[T]>> FixedSizeArray<T> for A {
+    #[inline]
+    fn as_slice(&self) -> &[T] {
+        self
+    }
+    #[inline]
+    fn as_mut_slice(&mut self) -> &mut [T] {
+        self
+    }
+}
+
 // macro for implementing n-ary tuple functions and operations
 macro_rules! array_impls {
     ($($N:expr)+) => {
         $(
-            #[unstable(feature = "core")]
-            impl<T> FixedSizeArray<T> for [T; $N] {
-                #[inline]
-                fn as_slice(&self) -> &[T] {
-                    &self[..]
-                }
-                #[inline]
-                fn as_mut_slice(&mut self) -> &mut [T] {
-                    &mut self[..]
-                }
-            }
-
-            #[unstable(feature = "array_as_ref",
-                       reason = "should ideally be implemented for all fixed-sized arrays")]
             impl<T> AsRef<[T]> for [T; $N] {
                 #[inline]
                 fn as_ref(&self) -> &[T] {
@@ -63,12 +73,24 @@ macro_rules! array_impls {
                 }
             }
 
-            #[unstable(feature = "array_as_ref",
-                       reason = "should ideally be implemented for all fixed-sized arrays")]
             impl<T> AsMut<[T]> for [T; $N] {
                 #[inline]
                 fn as_mut(&mut self) -> &mut [T] {
                     &mut self[..]
+                }
+            }
+
+            #[stable(feature = "array_borrow", since = "1.4.0")]
+            impl<T> Borrow<[T]> for [T; $N] {
+                fn borrow(&self) -> &[T] {
+                    self
+                }
+            }
+
+            #[stable(feature = "array_borrow", since = "1.4.0")]
+            impl<T> BorrowMut<[T]> for [T; $N] {
+                fn borrow_mut(&mut self) -> &mut [T] {
+                    self
                 }
             }
 
@@ -165,3 +187,26 @@ array_impls! {
     20 21 22 23 24 25 26 27 28 29
     30 31 32
 }
+
+// The Default impls cannot be generated using the array_impls! macro because
+// they require array literals.
+
+macro_rules! array_impl_default {
+    {$n:expr, $t:ident $($ts:ident)*} => {
+        #[stable(since = "1.4.0", feature = "array_default")]
+        impl<T> Default for [T; $n] where T: Default {
+            fn default() -> [T; $n] {
+                [$t::default(), $($ts::default()),*]
+            }
+        }
+        array_impl_default!{($n - 1), $($ts)*}
+    };
+    {$n:expr,} => {
+        #[stable(since = "1.4.0", feature = "array_default")]
+        impl<T> Default for [T; $n] {
+            fn default() -> [T; $n] { [] }
+        }
+    };
+}
+
+array_impl_default!{32, T T T T T T T T T T T T T T T T T T T T T T T T T T T T T T T T}

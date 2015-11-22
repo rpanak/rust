@@ -74,17 +74,6 @@
 //! `&foo()` or `match foo() { ref x => ... }`, where the user is
 //! implicitly requesting a temporary.
 //!
-//! Somewhat surprisingly, not all lvalue expressions yield lvalue datums
-//! when trans'd. Ultimately the reason for this is to micro-optimize
-//! the resulting LLVM. For example, consider the following code:
-//!
-//!     fn foo() -> Box<int> { ... }
-//!     let x = *foo();
-//!
-//! The expression `*foo()` is an lvalue, but if you invoke `expr::trans`,
-//! it will return an rvalue datum. See `deref_once` in expr.rs for
-//! more details.
-//!
 //! ### Rvalues in detail
 //!
 //! Rvalues datums are values with no cleanup scheduled. One must be
@@ -104,16 +93,15 @@ pub use self::Expr::*;
 pub use self::RvalueMode::*;
 
 use llvm::ValueRef;
+use trans::adt;
 use trans::base::*;
-use trans::build::Load;
+use trans::build::{Load, Store};
 use trans::common::*;
 use trans::cleanup;
-use trans::cleanup::CleanupMethods;
+use trans::cleanup::{CleanupMethods, DropHintDatum, DropHintMethods};
 use trans::expr;
 use trans::tvec;
-use trans::type_of;
-use middle::ty::{self, Ty};
-use util::ppaux::ty_to_string;
+use middle::ty::Ty;
 
 use std::fmt;
 use syntax::ast;
@@ -123,7 +111,7 @@ use syntax::codemap::DUMMY_SP;
 /// describes where the value is stored, what Rust type the value has,
 /// whether it is addressed by reference, and so forth. Please refer
 /// the section on datums in `README.md` for more details.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct Datum<'tcx, K> {
     /// The llvm value.  This is either a pointer to the Rust value or
     /// the value itself, depending on `kind` below.
@@ -150,15 +138,123 @@ pub enum Expr {
     /// `val` is a pointer into memory for which a cleanup is scheduled
     /// (and thus has type *T). If you move out of an Lvalue, you must
     /// zero out the memory (FIXME #5016).
-    LvalueExpr,
+    LvalueExpr(Lvalue),
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct Lvalue;
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum DropFlagInfo {
+    DontZeroJustUse(ast::NodeId),
+    ZeroAndMaintain(ast::NodeId),
+    None,
+}
+
+impl DropFlagInfo {
+    pub fn must_zero(&self) -> bool {
+        match *self {
+            DropFlagInfo::DontZeroJustUse(..) => false,
+            DropFlagInfo::ZeroAndMaintain(..) => true,
+            DropFlagInfo::None => true,
+        }
+    }
+
+    pub fn hint_datum<'blk, 'tcx>(&self, bcx: Block<'blk, 'tcx>)
+                              -> Option<DropHintDatum<'tcx>> {
+        let id = match *self {
+            DropFlagInfo::None => return None,
+            DropFlagInfo::DontZeroJustUse(id) |
+            DropFlagInfo::ZeroAndMaintain(id) => id,
+        };
+
+        let hints = bcx.fcx.lldropflag_hints.borrow();
+        let retval = hints.hint_datum(id);
+        assert!(retval.is_some(), "An id (={}) means must have a hint", id);
+        retval
+    }
+}
+
+// FIXME: having Lvalue be `Copy` is a bit of a footgun, since clients
+// may not realize that subparts of an Lvalue can have a subset of
+// drop-flags associated with them, while this as written will just
+// memcpy the drop_flag_info. But, it is an easier way to get `_match`
+// off the ground to just let this be `Copy` for now.
+#[derive(Copy, Clone, Debug)]
+pub struct Lvalue {
+    pub source: &'static str,
+    pub drop_flag_info: DropFlagInfo
+}
 
 #[derive(Debug)]
 pub struct Rvalue {
     pub mode: RvalueMode
+}
+
+/// Classifies what action we should take when a value is moved away
+/// with respect to its drop-flag.
+///
+/// Long term there will be no need for this classification: all flags
+/// (which will be stored on the stack frame) will have the same
+/// interpretation and maintenance code associated with them.
+#[derive(Copy, Clone, Debug)]
+pub enum HintKind {
+    /// When the value is moved, set the drop-flag to "dropped"
+    /// (i.e. "zero the flag", even when the specific representation
+    /// is not literally 0) and when it is reinitialized, set the
+    /// drop-flag back to "initialized".
+    ZeroAndMaintain,
+
+    /// When the value is moved, do not set the drop-flag to "dropped"
+    /// However, continue to read the drop-flag in deciding whether to
+    /// drop. (In essence, the path/fragment in question will never
+    /// need to be dropped at the points where it is moved away by
+    /// this code, but we are defending against the scenario where
+    /// some *other* code could move away (or drop) the value and thus
+    /// zero-the-flag, which is why we will still read from it.
+    DontZeroJustUse,
+}
+
+impl Lvalue { // Constructors for various Lvalues.
+    pub fn new<'blk, 'tcx>(source: &'static str) -> Lvalue {
+        debug!("Lvalue at {} no drop flag info", source);
+        Lvalue { source: source, drop_flag_info: DropFlagInfo::None }
+    }
+
+    pub fn new_dropflag_hint(source: &'static str) -> Lvalue {
+        debug!("Lvalue at {} is drop flag hint", source);
+        Lvalue { source: source, drop_flag_info: DropFlagInfo::None }
+    }
+
+    pub fn new_with_hint<'blk, 'tcx>(source: &'static str,
+                                     bcx: Block<'blk, 'tcx>,
+                                     id: ast::NodeId,
+                                     k: HintKind) -> Lvalue {
+        let (opt_id, info) = {
+            let hint_available = Lvalue::has_dropflag_hint(bcx, id) &&
+                bcx.tcx().sess.nonzeroing_move_hints();
+            let info = match k {
+                HintKind::ZeroAndMaintain if hint_available =>
+                    DropFlagInfo::ZeroAndMaintain(id),
+                HintKind::DontZeroJustUse if hint_available =>
+                    DropFlagInfo::DontZeroJustUse(id),
+                _ =>
+                    DropFlagInfo::None,
+            };
+            (Some(id), info)
+        };
+        debug!("Lvalue at {}, id: {:?} info: {:?}", source, opt_id, info);
+        Lvalue { source: source, drop_flag_info: info }
+    }
+} // end Lvalue constructor methods.
+
+impl Lvalue {
+    fn has_dropflag_hint<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
+                                     id: ast::NodeId) -> bool {
+        let hints = bcx.fcx.lldropflag_hints.borrow();
+        hints.has_hint(id)
+    }
+    pub fn dropflag_hint<'blk, 'tcx>(&self, bcx: Block<'blk, 'tcx>)
+                                 -> Option<DropHintDatum<'tcx>> {
+        self.drop_flag_info.hint_datum(bcx)
+    }
 }
 
 impl Rvalue {
@@ -205,15 +301,13 @@ pub fn lvalue_scratch_datum<'blk, 'tcx, A, F>(bcx: Block<'blk, 'tcx>,
                                               -> DatumBlock<'blk, 'tcx, Lvalue> where
     F: FnOnce(A, Block<'blk, 'tcx>, ValueRef) -> Block<'blk, 'tcx>,
 {
-    let llty = type_of::type_of(bcx.ccx(), ty);
-    let scratch = alloca(bcx, llty, name);
+    let scratch = alloc_ty(bcx, ty, name);
 
     // Subtle. Populate the scratch memory *before* scheduling cleanup.
     let bcx = populate(arg, bcx, scratch);
-    bcx.fcx.schedule_lifetime_end(scope, scratch);
-    bcx.fcx.schedule_drop_mem(scope, scratch, ty);
+    bcx.fcx.schedule_drop_mem(scope, scratch, ty, None);
 
-    DatumBlock::new(bcx, Datum::new(scratch, ty, Lvalue))
+    DatumBlock::new(bcx, Datum::new(scratch, ty, Lvalue::new("datum::lvalue_scratch_datum")))
 }
 
 /// Allocates temporary space on the stack using alloca() and returns a by-ref Datum pointing to
@@ -225,8 +319,8 @@ pub fn rvalue_scratch_datum<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
                                         ty: Ty<'tcx>,
                                         name: &str)
                                         -> Datum<'tcx, Rvalue> {
-    let llty = type_of::type_of(bcx.ccx(), ty);
-    let scratch = alloca(bcx, llty, name);
+    let scratch = alloc_ty(bcx, ty, name);
+    call_lifetime_start(bcx, scratch);
     Datum::new(scratch, ty, Rvalue::new(ByRef))
 }
 
@@ -250,7 +344,7 @@ fn add_rvalue_clean<'a, 'tcx>(mode: RvalueMode,
         ByValue => { fcx.schedule_drop_immediate(scope, val, ty); }
         ByRef => {
             fcx.schedule_lifetime_end(scope, val);
-            fcx.schedule_drop_mem(scope, val, ty);
+            fcx.schedule_drop_mem(scope, val, ty, None);
         }
     }
 }
@@ -307,10 +401,32 @@ impl KindOps for Lvalue {
                               -> Block<'blk, 'tcx> {
         let _icx = push_ctxt("<Lvalue as KindOps>::post_store");
         if bcx.fcx.type_needs_drop(ty) {
-            // cancel cleanup of affine values by drop-filling the memory
-            let () = drop_done_fill_mem(bcx, val, ty);
+            // cancel cleanup of affine values:
+            // 1. if it has drop-hint, mark as moved; then code
+            //    aware of drop-hint won't bother calling the
+            //    drop-glue itself.
+            if let Some(hint_datum) = self.drop_flag_info.hint_datum(bcx) {
+                let moved_hint_byte = adt::DTOR_MOVED_HINT;
+                let hint_llval = hint_datum.to_value().value();
+                Store(bcx, C_u8(bcx.fcx.ccx, moved_hint_byte), hint_llval);
+            }
+            // 2. if the drop info says its necessary, drop-fill the memory.
+            if self.drop_flag_info.must_zero() {
+                let () = drop_done_fill_mem(bcx, val, ty);
+            }
             bcx
         } else {
+            // FIXME (#5016) would be nice to assert this, but we have
+            // to allow for e.g. DontZeroJustUse flags, for now.
+            //
+            // (The dropflag hint construction should be taking
+            // !type_needs_drop into account; earlier analysis phases
+            // may not have all the info they need to include such
+            // information properly, I think; in particular the
+            // fragments analysis works on a non-monomorphized view of
+            // the code.)
+            //
+            // assert_eq!(self.drop_flag_info, DropFlagInfo::None);
             bcx
         }
     }
@@ -320,7 +436,7 @@ impl KindOps for Lvalue {
     }
 
     fn to_expr_kind(self) -> Expr {
-        LvalueExpr
+        LvalueExpr(self)
     }
 }
 
@@ -331,14 +447,14 @@ impl KindOps for Expr {
                               ty: Ty<'tcx>)
                               -> Block<'blk, 'tcx> {
         match *self {
-            LvalueExpr => Lvalue.post_store(bcx, val, ty),
+            LvalueExpr(ref l) => l.post_store(bcx, val, ty),
             RvalueExpr(ref r) => r.post_store(bcx, val, ty),
         }
     }
 
     fn is_by_ref(&self) -> bool {
         match *self {
-            LvalueExpr => Lvalue.is_by_ref(),
+            LvalueExpr(ref l) => l.is_by_ref(),
             RvalueExpr(ref r) => r.is_by_ref()
         }
     }
@@ -372,13 +488,21 @@ impl<'tcx> Datum<'tcx, Rvalue> {
         match self.kind.mode {
             ByRef => {
                 add_rvalue_clean(ByRef, fcx, scope, self.val, self.ty);
-                DatumBlock::new(bcx, Datum::new(self.val, self.ty, Lvalue))
+                DatumBlock::new(bcx, Datum::new(
+                    self.val,
+                    self.ty,
+                    Lvalue::new("datum::to_lvalue_datum_in_scope")))
             }
 
             ByValue => {
                 lvalue_scratch_datum(
                     bcx, self.ty, name, scope, self,
-                    |this, bcx, llval| this.store_to(bcx, llval))
+                    |this, bcx, llval| {
+                        call_lifetime_start(bcx, llval);
+                        let bcx = this.store_to(bcx, llval);
+                        bcx.fcx.schedule_lifetime_end(scope, llval);
+                        bcx
+                    })
             }
         }
     }
@@ -429,7 +553,7 @@ impl<'tcx> Datum<'tcx, Expr> {
     {
         let Datum { val, ty, kind } = self;
         match kind {
-            LvalueExpr => if_lvalue(Datum::new(val, ty, Lvalue)),
+            LvalueExpr(l) => if_lvalue(Datum::new(val, ty, l)),
             RvalueExpr(r) => if_rvalue(Datum::new(val, ty, r)),
         }
     }
@@ -540,7 +664,7 @@ impl<'tcx> Datum<'tcx, Lvalue> {
         };
         Datum {
             val: val,
-            kind: Lvalue,
+            kind: Lvalue::new("Datum::get_element"),
             ty: ty,
         }
     }
@@ -617,17 +741,16 @@ impl<'tcx, K: KindOps + fmt::Debug> Datum<'tcx, K> {
          * affine values (since they must never be duplicated).
          */
 
-        assert!(!ty::type_moves_by_default(&ty::empty_parameter_environment(bcx.tcx()),
-                                           DUMMY_SP,
-                                           self.ty));
+        assert!(!self.ty
+                     .moves_by_default(&bcx.tcx().empty_parameter_environment(), DUMMY_SP));
         self.shallow_copy_raw(bcx, dst)
     }
 
     #[allow(dead_code)] // useful for debugging
     pub fn to_string<'a>(&self, ccx: &CrateContext<'a, 'tcx>) -> String {
-        format!("Datum({}, {}, {:?})",
+        format!("Datum({}, {:?}, {:?})",
                 ccx.tn().val_to_string(self.val),
-                ty_to_string(ccx.tcx(), self.ty),
+                self.ty,
                 self.kind)
     }
 
@@ -652,7 +775,7 @@ impl<'tcx, K: KindOps + fmt::Debug> Datum<'tcx, K> {
     }
 
     pub fn to_llbool<'blk>(self, bcx: Block<'blk, 'tcx>) -> ValueRef {
-        assert!(ty::type_is_bool(self.ty));
+        assert!(self.ty.is_bool());
         self.to_llscalarish(bcx)
     }
 }

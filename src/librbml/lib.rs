@@ -114,18 +114,19 @@
 // Do not remove on snapshot creation. Needed for bootstrap. (Issue #22364)
 #![cfg_attr(stage0, feature(custom_attribute))]
 #![crate_name = "rbml"]
-#![unstable(feature = "rustc_private")]
+#![unstable(feature = "rustc_private", issue = "27812")]
 #![staged_api]
 #![crate_type = "rlib"]
 #![crate_type = "dylib"]
-#![doc(html_logo_url = "http://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
+#![doc(html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
        html_favicon_url = "https://doc.rust-lang.org/favicon.ico",
-       html_root_url = "http://doc.rust-lang.org/nightly/",
-       html_playground_url = "http://play.rust-lang.org/")]
+       html_root_url = "https://doc.rust-lang.org/nightly/",
+       html_playground_url = "https://play.rust-lang.org/",
+       test(attr(deny(warnings))))]
 
-#![feature(core)]
 #![feature(rustc_private)]
 #![feature(staged_api)]
+#![feature(slice_bytes)]
 
 #![cfg_attr(test, feature(test))]
 
@@ -397,39 +398,68 @@ pub mod reader {
         }
     }
 
-    pub fn docs<F>(d: Doc, mut it: F) -> bool where
-        F: FnMut(usize, Doc) -> bool,
-    {
-        let mut pos = d.start;
-        while pos < d.end {
-            let elt_tag = try_or!(tag_at(d.data, pos), false);
-            let elt_size = try_or!(tag_len_at(d.data, elt_tag), false);
-            pos = elt_size.next + elt_size.val;
-            let doc = Doc { data: d.data, start: elt_size.next, end: pos };
-            if !it(elt_tag.val, doc) {
-                return false;
-            }
+    pub fn docs<'a>(d: Doc<'a>) -> DocsIterator<'a> {
+        DocsIterator {
+            d: d
         }
-        return true;
     }
 
-    pub fn tagged_docs<F>(d: Doc, tg: usize, mut it: F) -> bool where
-        F: FnMut(Doc) -> bool,
-    {
-        let mut pos = d.start;
-        while pos < d.end {
-            let elt_tag = try_or!(tag_at(d.data, pos), false);
-            let elt_size = try_or!(tag_len_at(d.data, elt_tag), false);
-            pos = elt_size.next + elt_size.val;
-            if elt_tag.val == tg {
-                let doc = Doc { data: d.data, start: elt_size.next,
-                                end: pos };
-                if !it(doc) {
-                    return false;
+    pub struct DocsIterator<'a> {
+        d: Doc<'a>,
+    }
+
+    impl<'a> Iterator for DocsIterator<'a> {
+        type Item = (usize, Doc<'a>);
+
+        fn next(&mut self) -> Option<(usize, Doc<'a>)> {
+            if self.d.start >= self.d.end {
+                return None;
+            }
+
+            let elt_tag = try_or!(tag_at(self.d.data, self.d.start), {
+                self.d.start = self.d.end;
+                None
+            });
+            let elt_size = try_or!(tag_len_at(self.d.data, elt_tag), {
+                self.d.start = self.d.end;
+                None
+            });
+
+            let end = elt_size.next + elt_size.val;
+            let doc = Doc {
+                data: self.d.data,
+                start: elt_size.next,
+                end: end,
+            };
+
+            self.d.start = end;
+            return Some((elt_tag.val, doc));
+        }
+    }
+
+    pub fn tagged_docs<'a>(d: Doc<'a>, tag: usize) -> TaggedDocsIterator<'a> {
+        TaggedDocsIterator {
+            iter: docs(d),
+            tag: tag,
+        }
+    }
+
+    pub struct TaggedDocsIterator<'a> {
+        iter: DocsIterator<'a>,
+        tag: usize,
+    }
+
+    impl<'a> Iterator for TaggedDocsIterator<'a> {
+        type Item = Doc<'a>;
+
+        fn next(&mut self) -> Option<Doc<'a>> {
+            while let Some((tag, doc)) = self.iter.next() {
+                if tag == self.tag {
+                    return Some(doc);
                 }
             }
+            None
         }
-        return true;
     }
 
     pub fn with_doc_data<T, F>(d: Doc, f: F) -> T where
@@ -438,37 +468,44 @@ pub mod reader {
         f(&d.data[d.start..d.end])
     }
 
-
     pub fn doc_as_u8(d: Doc) -> u8 {
         assert_eq!(d.end, d.start + 1);
         d.data[d.start]
     }
 
-    pub fn doc_as_u16(d: Doc) -> u16 {
-        assert_eq!(d.end, d.start + 2);
-        let mut b = [0; 2];
-        bytes::copy_memory(&d.data[d.start..d.end], &mut b);
-        unsafe { (*(b.as_ptr() as *const u16)).to_be() }
-    }
-
-    pub fn doc_as_u32(d: Doc) -> u32 {
-        assert_eq!(d.end, d.start + 4);
-        let mut b = [0; 4];
-        bytes::copy_memory(&d.data[d.start..d.end], &mut b);
-        unsafe { (*(b.as_ptr() as *const u32)).to_be() }
-    }
-
     pub fn doc_as_u64(d: Doc) -> u64 {
-        assert_eq!(d.end, d.start + 8);
-        let mut b = [0; 8];
-        bytes::copy_memory(&d.data[d.start..d.end], &mut b);
-        unsafe { (*(b.as_ptr() as *const u64)).to_be() }
+        if d.end >= 8 {
+            // For performance, we read 8 big-endian bytes,
+            // and mask off the junk if there is any. This
+            // obviously won't work on the first 8 bytes
+            // of a file - we will fall of the start
+            // of the page and segfault.
+
+            let mut b = [0; 8];
+            bytes::copy_memory(&d.data[d.end-8..d.end], &mut b);
+            let data = unsafe { (*(b.as_ptr() as *const u64)).to_be() };
+            let len = d.end - d.start;
+            if len < 8 {
+                data & ((1<<(len*8))-1)
+            } else {
+                data
+            }
+        } else {
+            let mut result = 0;
+            for b in &d.data[d.start..d.end] {
+                result = (result<<8) + (*b as u64);
+            }
+            result
+        }
     }
 
-    pub fn doc_as_i8(d: Doc) -> i8 { doc_as_u8(d) as i8 }
-    pub fn doc_as_i16(d: Doc) -> i16 { doc_as_u16(d) as i16 }
-    pub fn doc_as_i32(d: Doc) -> i32 { doc_as_u32(d) as i32 }
-    pub fn doc_as_i64(d: Doc) -> i64 { doc_as_u64(d) as i64 }
+    #[inline] pub fn doc_as_u16(d: Doc) -> u16 { doc_as_u64(d) as u16 }
+    #[inline] pub fn doc_as_u32(d: Doc) -> u32 { doc_as_u64(d) as u32 }
+
+    #[inline] pub fn doc_as_i8(d: Doc) -> i8 { doc_as_u8(d) as i8 }
+    #[inline] pub fn doc_as_i16(d: Doc) -> i16 { doc_as_u16(d) as i16 }
+    #[inline] pub fn doc_as_i32(d: Doc) -> i32 { doc_as_u32(d) as i32 }
+    #[inline] pub fn doc_as_i64(d: Doc) -> i64 { doc_as_u64(d) as i64 }
 
     pub struct Decoder<'a> {
         parent: Doc<'a>,
@@ -878,7 +915,7 @@ pub mod writer {
         }
     }
 
-    fn write_vuint<W: Write>(w: &mut W, n: usize) -> EncodeResult {
+    pub fn write_vuint<W: Write>(w: &mut W, n: usize) -> EncodeResult {
         if n < 0x7f { return write_sized_vuint(w, n, 1); }
         if n < 0x4000 { return write_sized_vuint(w, n, 2); }
         if n < 0x200000 { return write_sized_vuint(w, n, 3); }
@@ -893,15 +930,6 @@ pub mod writer {
                 writer: w,
                 size_positions: vec!(),
                 relax_limit: 0,
-            }
-        }
-
-        /// FIXME(pcwalton): Workaround for badness in trans. DO NOT USE ME.
-        pub unsafe fn unsafe_clone(&self) -> Encoder<'a> {
-            Encoder {
-                writer: mem::transmute_copy(&self.writer),
-                size_positions: self.size_positions.clone(),
-                relax_limit: self.relax_limit,
             }
         }
 
@@ -967,35 +995,43 @@ pub mod writer {
 
         pub fn wr_tagged_u64(&mut self, tag_id: usize, v: u64) -> EncodeResult {
             let bytes: [u8; 8] = unsafe { mem::transmute(v.to_be()) };
-            self.wr_tagged_bytes(tag_id, &bytes)
+            // tagged integers are emitted in big-endian, with no
+            // leading zeros.
+            let leading_zero_bytes = v.leading_zeros()/8;
+            self.wr_tagged_bytes(tag_id, &bytes[leading_zero_bytes as usize..])
         }
 
-        pub fn wr_tagged_u32(&mut self, tag_id: usize, v: u32)  -> EncodeResult{
-            let bytes: [u8; 4] = unsafe { mem::transmute(v.to_be()) };
-            self.wr_tagged_bytes(tag_id, &bytes)
+        #[inline]
+        pub fn wr_tagged_u32(&mut self, tag_id: usize, v: u32)  -> EncodeResult {
+            self.wr_tagged_u64(tag_id, v as u64)
         }
 
+        #[inline]
         pub fn wr_tagged_u16(&mut self, tag_id: usize, v: u16) -> EncodeResult {
-            let bytes: [u8; 2] = unsafe { mem::transmute(v.to_be()) };
-            self.wr_tagged_bytes(tag_id, &bytes)
+            self.wr_tagged_u64(tag_id, v as u64)
         }
 
+        #[inline]
         pub fn wr_tagged_u8(&mut self, tag_id: usize, v: u8) -> EncodeResult {
             self.wr_tagged_bytes(tag_id, &[v])
         }
 
+        #[inline]
         pub fn wr_tagged_i64(&mut self, tag_id: usize, v: i64) -> EncodeResult {
             self.wr_tagged_u64(tag_id, v as u64)
         }
 
+        #[inline]
         pub fn wr_tagged_i32(&mut self, tag_id: usize, v: i32) -> EncodeResult {
             self.wr_tagged_u32(tag_id, v as u32)
         }
 
+        #[inline]
         pub fn wr_tagged_i16(&mut self, tag_id: usize, v: i16) -> EncodeResult {
             self.wr_tagged_u16(tag_id, v as u16)
         }
 
+        #[inline]
         pub fn wr_tagged_i8(&mut self, tag_id: usize, v: i8) -> EncodeResult {
             self.wr_tagged_bytes(tag_id, &[v as u8])
         }

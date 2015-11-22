@@ -29,9 +29,8 @@
 use std::mem;
 use std::collections::HashMap;
 
+use rustc::middle::def_id::DefId;
 use rustc::middle::subst;
-use rustc::middle::ty;
-use syntax::ast;
 
 use clean::PathParameters as PP;
 use clean::WherePredicate as WP;
@@ -139,7 +138,7 @@ pub fn where_clauses(cx: &DocContext, clauses: Vec<WP>) -> Vec<WP> {
 }
 
 pub fn ty_params(mut params: Vec<clean::TyParam>) -> Vec<clean::TyParam> {
-    for param in params.iter_mut() {
+    for param in &mut params {
         param.bounds = ty_bounds(mem::replace(&mut param.bounds, Vec::new()));
     }
     return params;
@@ -149,13 +148,13 @@ fn ty_bounds(bounds: Vec<clean::TyParamBound>) -> Vec<clean::TyParamBound> {
     bounds
 }
 
-fn trait_is_same_or_supertrait(cx: &DocContext, child: ast::DefId,
-                               trait_: ast::DefId) -> bool {
+fn trait_is_same_or_supertrait(cx: &DocContext, child: DefId,
+                               trait_: DefId) -> bool {
     if child == trait_ {
         return true
     }
-    let def = ty::lookup_trait_def(cx.tcx(), child);
-    let predicates = ty::lookup_predicates(cx.tcx(), child);
+    let def = cx.tcx().lookup_trait_def(child);
+    let predicates = cx.tcx().lookup_predicates(child);
     let generics = (&def.generics, &predicates, subst::TypeSpace).clean(cx);
     generics.where_predicates.iter().filter_map(|pred| {
         match *pred {
@@ -165,7 +164,7 @@ fn trait_is_same_or_supertrait(cx: &DocContext, child: ast::DefId,
             } if *s == "Self" => Some(bounds),
             _ => None,
         }
-    }).flat_map(|bounds| bounds.iter()).any(|bound| {
+    }).flat_map(|bounds| bounds).any(|bound| {
         let poly_trait = match *bound {
             clean::TraitBound(ref t, _) => t,
             _ => return false,

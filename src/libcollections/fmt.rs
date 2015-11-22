@@ -85,9 +85,9 @@
 //! format!("{a} {c} {b}", a="a", b='b', c=3);  // => "a 3 b"
 //! ```
 //!
-//! It is illegal to put positional parameters (those without names) after
-//! arguments which have names. Like with positional parameters, it is illegal
-//! to provide named parameters that are unused by the format string.
+//! It is not valid to put positional parameters (those without names) after
+//! arguments which have names. Like with positional parameters, it is not
+//! valid to provide named parameters that are unused by the format string.
 //!
 //! ## Argument types
 //!
@@ -103,8 +103,9 @@
 //! hexadecimal as well as an
 //! octal.
 //!
-//! There are various parameters which do require a particular type, however. Namely, the `{:.*}`
-//! syntax, which sets the number of numbers after the decimal in floating-point types:
+//! There are various parameters which do require a particular type, however.
+//! Namely, the `{:.*}` syntax, which sets the number of numbers after the
+//! decimal in floating-point types:
 //!
 //! ```
 //! let formatted_number = format!("{:.*}", 2, 1.234567);
@@ -112,10 +113,11 @@
 //! assert_eq!("1.23", formatted_number)
 //! ```
 //!
-//! If this syntax is used, then the number of characters to print precedes the actual object being
-//! formatted, and the number of characters must have the type `usize`. Although a `usize` can be
-//! printed with `{}`, it is illegal to reference an argument as such. For example this is another
-//! invalid format string:
+//! If this syntax is used, then the number of characters to print precedes the
+//! actual object being formatted, and the number of characters must have the
+//! type `usize`. Although a `usize` can be printed with `{}`, it is invalid to
+//! reference an argument as such. For example this is another invalid format
+//! string:
 //!
 //! ```text
 //! {:.*} {0}
@@ -128,15 +130,15 @@
 //! This allows multiple actual types to be formatted via `{:x}` (like `i8` as
 //! well as `isize`).  The current mapping of types to traits is:
 //!
-//! * *nothing* ⇒ `Display`
-//! * `?` ⇒ `Debug`
-//! * `o` ⇒ `Octal`
-//! * `x` ⇒ `LowerHex`
-//! * `X` ⇒ `UpperHex`
-//! * `p` ⇒ `Pointer`
-//! * `b` ⇒ `Binary`
-//! * `e` ⇒ `LowerExp`
-//! * `E` ⇒ `UpperExp`
+//! * *nothing* ⇒ [`Display`](trait.Display.html)
+//! * `?` ⇒ [`Debug`](trait.Debug.html)
+//! * `o` ⇒ [`Octal`](trait.Octal.html)
+//! * `x` ⇒ [`LowerHex`](trait.LowerHex.html)
+//! * `X` ⇒ [`UpperHex`](trait.UpperHex.html)
+//! * `p` ⇒ [`Pointer`](trait.Pointer.html)
+//! * `b` ⇒ [`Binary`](trait.Binary.html)
+//! * `e` ⇒ [`LowerExp`](trait.LowerExp.html)
+//! * `E` ⇒ [`UpperExp`](trait.UpperExp.html)
 //!
 //! What this means is that any type of argument which implements the
 //! `fmt::Binary` trait can then be formatted with `{:b}`. Implementations
@@ -148,6 +150,7 @@
 //! implement a method of the signature:
 //!
 //! ```
+//! # #![allow(dead_code)]
 //! # use std::fmt;
 //! # struct Foo; // our custom type
 //! # impl fmt::Display for Foo {
@@ -164,17 +167,15 @@
 //! provides some helper methods.
 //!
 //! Additionally, the return value of this function is `fmt::Result` which is a
-//! typedef to `Result<(), IoError>` (also known as `IoResult<()>`). Formatting
-//! implementations should ensure that they return errors from `write!`
+//! typedef to `Result<(), std::io::Error>` (also known as `std::io::Result<()>`).
+//! Formatting implementations should ensure that they return errors from `write!`
 //! correctly (propagating errors upward).
 //!
 //! An example of implementing the formatting traits would look
 //! like:
 //!
 //! ```
-//! # #![feature(core, std_misc)]
 //! use std::fmt;
-//! use std::f64;
 //!
 //! #[derive(Debug)]
 //! struct Vector2D {
@@ -217,7 +218,7 @@
 //! }
 //! ```
 //!
-//! ### fmt::Display vs fmt::Debug
+//! ### `fmt::Display` vs `fmt::Debug`
 //!
 //! These two formatting traits have distinct purposes:
 //!
@@ -287,6 +288,7 @@
 //! off, some example usage is:
 //!
 //! ```
+//! # #![allow(unused_must_use)]
 //! use std::fmt;
 //! use std::io::{self, Write};
 //!
@@ -353,24 +355,28 @@
 //! * `^` - the argument is center-aligned in `width` columns
 //! * `>` - the argument is right-aligned in `width` columns
 //!
-//! ## Sign/#/0
+//! Note that alignment may not be implemented by some types. A good way
+//! to ensure padding is applied is to format your input, then use this
+//! resulting string to pad your output.
+//!
+//! ## Sign/`#`/`0`
 //!
 //! These can all be interpreted as flags for a particular formatter.
 //!
-//! * '+' - This is intended for numeric types and indicates that the sign
+//! * `+` - This is intended for numeric types and indicates that the sign
 //!         should always be printed. Positive signs are never printed by
 //!         default, and the negative sign is only printed by default for the
-//!         `Signed` trait. This flag indicates that the correct sign (+ or -)
+//!         `Signed` trait. This flag indicates that the correct sign (`+` or `-`)
 //!         should always be printed.
-//! * '-' - Currently not used
-//! * '#' - This flag is indicates that the "alternate" form of printing should
-//!         be used.  For array slices, the alternate form omits the brackets.
-//!         For the integer formatting traits, the alternate forms are:
-//!     * `#x` - precedes the argument with a "0x"
-//!     * `#X` - precedes the argument with a "0x"
-//!     * `#t` - precedes the argument with a "0b"
-//!     * `#o` - precedes the argument with a "0o"
-//! * '0' - This is used to indicate for integer formats that the padding should
+//! * `-` - Currently not used
+//! * `#` - This flag is indicates that the "alternate" form of printing should
+//!         be used. The alternate forms are:
+//!     * `#?` - pretty-print the `Debug` formatting
+//!     * `#x` - precedes the argument with a `0x`
+//!     * `#X` - precedes the argument with a `0x`
+//!     * `#b` - precedes the argument with a `0b`
+//!     * `#o` - precedes the argument with a `0o`
+//! * `0` - This is used to indicate for integer formats that the padding should
 //!         both be done with a `0` character as well as be sign-aware. A format
 //!         like `{:08}` would yield `00000001` for the integer `1`, while the
 //!         same format would yield `-0000001` for the integer `-1`. Notice that
@@ -385,8 +391,8 @@
 //!
 //! The default fill/alignment for non-numerics is a space and left-aligned. The
 //! defaults for numeric formatters is also a space but with right-alignment. If
-//! the '0' flag is specified for numerics, then the implicit fill character is
-//! '0'.
+//! the `0` flag is specified for numerics, then the implicit fill character is
+//! `0`.
 //!
 //! The value for the width can also be provided as a `usize` in the list of
 //! parameters by using the `2$` syntax indicating that the second argument is a
@@ -405,19 +411,20 @@
 //!
 //! There are three possible ways to specify the desired `precision`:
 //!
-//! There are three possible ways to specify the desired `precision`:
-//! 1. An integer `.N`,
-//! 2. an integer followed by dollar sign `.N$`, or
-//! 3. an asterisk `.*`.
+//! 1. An integer `.N`:
 //!
-//! The first specification, `.N`, means the integer `N` itself is the precision.
+//!    the integer `N` itself is the precision.
 //!
-//! The second, `.N$`, means use format *argument* `N` (which must be a `usize`) as the precision.
+//! 2. An integer followed by dollar sign `.N$`:
 //!
-//! Finally,  `.*` means that this `{...}` is associated with *two* format inputs rather than one:
-//! the first input holds the `usize` precision, and the second holds the value to print.  Note
-//! that in this case, if one uses the format string `{<arg>:<spec>.*}`, then the `<arg>` part
-//! refers to the *value* to print, and the `precision` must come in the input preceding `<arg>`.
+//!    use format *argument* `N` (which must be a `usize`) as the precision.
+//!
+//! 3. An asterisk `.*`:
+//!
+//!    `.*` means that this `{...}` is associated with *two* format inputs rather than one: the
+//!    first input holds the `usize` precision, and the second holds the value to print.  Note that
+//!    in this case, if one uses the format string `{<arg>:<spec>.*}`, then the `<arg>` part refers
+//!    to the *value* to print, and the `precision` must come in the input preceding `<arg>`.
 //!
 //! For example, these:
 //!
@@ -468,13 +475,24 @@
 
 #![stable(feature = "rust1", since = "1.0.0")]
 
-pub use core::fmt::{Formatter, Result, Write, rt};
+#[unstable(feature = "fmt_internals", issue = "0")]
+pub use core::fmt::rt;
+#[stable(feature = "rust1", since = "1.0.0")]
+pub use core::fmt::{Formatter, Result, Write};
+#[stable(feature = "rust1", since = "1.0.0")]
 pub use core::fmt::{Octal, Binary};
+#[stable(feature = "rust1", since = "1.0.0")]
 pub use core::fmt::{Display, Debug};
+#[stable(feature = "rust1", since = "1.0.0")]
 pub use core::fmt::{LowerHex, UpperHex, Pointer};
+#[stable(feature = "rust1", since = "1.0.0")]
 pub use core::fmt::{LowerExp, UpperExp};
+#[stable(feature = "rust1", since = "1.0.0")]
 pub use core::fmt::Error;
+#[stable(feature = "rust1", since = "1.0.0")]
 pub use core::fmt::{ArgumentV1, Arguments, write, radix, Radix, RadixFmt};
+#[stable(feature = "rust1", since = "1.0.0")]
+pub use core::fmt::{DebugList, DebugMap, DebugSet, DebugStruct, DebugTuple};
 
 use string;
 

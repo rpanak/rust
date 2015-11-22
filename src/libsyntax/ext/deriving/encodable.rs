@@ -100,7 +100,7 @@ use ptr::P;
 pub fn expand_deriving_rustc_encodable(cx: &mut ExtCtxt,
                                        span: Span,
                                        mitem: &MetaItem,
-                                       item: Annotatable,
+                                       item: &Annotatable,
                                        push: &mut FnMut(Annotatable))
 {
     expand_deriving_encodable_imp(cx, span, mitem, item, push, "rustc_serialize")
@@ -109,7 +109,7 @@ pub fn expand_deriving_rustc_encodable(cx: &mut ExtCtxt,
 pub fn expand_deriving_encodable(cx: &mut ExtCtxt,
                                  span: Span,
                                  mitem: &MetaItem,
-                                 item: Annotatable,
+                                 item: &Annotatable,
                                  push: &mut FnMut(Annotatable))
 {
     expand_deriving_encodable_imp(cx, span, mitem, item, push, "serialize")
@@ -118,13 +118,14 @@ pub fn expand_deriving_encodable(cx: &mut ExtCtxt,
 fn expand_deriving_encodable_imp(cx: &mut ExtCtxt,
                                  span: Span,
                                  mitem: &MetaItem,
-                                 item: Annotatable,
+                                 item: &Annotatable,
                                  push: &mut FnMut(Annotatable),
                                  krate: &'static str)
 {
-    if !cx.use_std {
+    if cx.crate_root != Some("std") {
         // FIXME(#21880): lift this requirement.
-        cx.span_err(span, "this trait cannot be derived with #![no_std]");
+        cx.span_err(span, "this trait cannot be derived with #![no_std] \
+                           or #![no_core]");
         return;
     }
 
@@ -134,6 +135,7 @@ fn expand_deriving_encodable_imp(cx: &mut ExtCtxt,
         path: Path::new_(vec!(krate, "Encodable"), None, vec!(), true),
         additional_bounds: Vec::new(),
         generics: LifetimeBounds::empty(),
+        is_unsafe: false,
         methods: vec!(
             MethodDef {
                 name: "encode",
@@ -164,7 +166,7 @@ fn expand_deriving_encodable_imp(cx: &mut ExtCtxt,
         associated_types: Vec::new(),
     };
 
-    trait_def.expand(cx, mitem, &item, push)
+    trait_def.expand(cx, mitem, item, push)
 }
 
 fn encodable_substructure(cx: &mut ExtCtxt, trait_span: Span,
@@ -186,7 +188,7 @@ fn encodable_substructure(cx: &mut ExtCtxt, trait_span: Span,
                     ..
                 }) in fields.iter().enumerate() {
                 let name = match name {
-                    Some(id) => token::get_ident(id),
+                    Some(id) => id.name.as_str(),
                     None => {
                         token::intern_and_get_ident(&format!("_field{}", i))
                     }
@@ -223,7 +225,7 @@ fn encodable_substructure(cx: &mut ExtCtxt, trait_span: Span,
                                 encoder,
                                 cx.ident_of("emit_struct"),
                                 vec!(
-                cx.expr_str(trait_span, token::get_ident(substr.type_ident)),
+                cx.expr_str(trait_span, substr.type_ident.name.as_str()),
                 cx.expr_usize(trait_span, fields.len()),
                 blk
             ))
@@ -263,7 +265,7 @@ fn encodable_substructure(cx: &mut ExtCtxt, trait_span: Span,
             }
 
             let blk = cx.lambda_stmts_1(trait_span, stmts, blkarg);
-            let name = cx.expr_str(trait_span, token::get_ident(variant.node.name));
+            let name = cx.expr_str(trait_span, variant.node.name.name.as_str());
             let call = cx.expr_method_call(trait_span, blkencoder,
                                            cx.ident_of("emit_enum_variant"),
                                            vec!(name,
@@ -275,7 +277,7 @@ fn encodable_substructure(cx: &mut ExtCtxt, trait_span: Span,
                                           encoder,
                                           cx.ident_of("emit_enum"),
                                           vec!(
-                cx.expr_str(trait_span, token::get_ident(substr.type_ident)),
+                cx.expr_str(trait_span, substr.type_ident.name.as_str()),
                 blk
             ));
             cx.expr_block(cx.block(trait_span, vec!(me), Some(ret)))

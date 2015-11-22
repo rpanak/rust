@@ -11,10 +11,9 @@ use self::Context::*;
 
 use session::Session;
 
-use syntax::ast;
 use syntax::codemap::Span;
-use syntax::visit::Visitor;
-use syntax::visit;
+use rustc_front::intravisit::{self, Visitor};
+use rustc_front::hir;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Context {
@@ -27,30 +26,30 @@ struct CheckLoopVisitor<'a> {
     cx: Context
 }
 
-pub fn check_crate(sess: &Session, krate: &ast::Crate) {
-    visit::walk_crate(&mut CheckLoopVisitor { sess: sess, cx: Normal }, krate)
+pub fn check_crate(sess: &Session, krate: &hir::Crate) {
+    krate.visit_all_items(&mut CheckLoopVisitor { sess: sess, cx: Normal });
 }
 
 impl<'a, 'v> Visitor<'v> for CheckLoopVisitor<'a> {
-    fn visit_item(&mut self, i: &ast::Item) {
-        self.with_context(Normal, |v| visit::walk_item(v, i));
+    fn visit_item(&mut self, i: &hir::Item) {
+        self.with_context(Normal, |v| intravisit::walk_item(v, i));
     }
 
-    fn visit_expr(&mut self, e: &ast::Expr) {
+    fn visit_expr(&mut self, e: &hir::Expr) {
         match e.node {
-            ast::ExprWhile(ref e, ref b, _) => {
+            hir::ExprWhile(ref e, ref b, _) => {
                 self.visit_expr(&**e);
                 self.with_context(Loop, |v| v.visit_block(&**b));
             }
-            ast::ExprLoop(ref b, _) => {
+            hir::ExprLoop(ref b, _) => {
                 self.with_context(Loop, |v| v.visit_block(&**b));
             }
-            ast::ExprClosure(_, _, ref b) => {
+            hir::ExprClosure(_, _, ref b) => {
                 self.with_context(Closure, |v| v.visit_block(&**b));
             }
-            ast::ExprBreak(_) => self.require_loop("break", e.span),
-            ast::ExprAgain(_) => self.require_loop("continue", e.span),
-            _ => visit::walk_expr(self, e)
+            hir::ExprBreak(_) => self.require_loop("break", e.span),
+            hir::ExprAgain(_) => self.require_loop("continue", e.span),
+            _ => intravisit::walk_expr(self, e)
         }
     }
 }

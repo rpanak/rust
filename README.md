@@ -1,18 +1,16 @@
 # The Rust Programming Language
 
-Rust is a systems programming language that is fast, memory safe and
-multithreaded, but does not employ a garbage collector or otherwise
-impose significant runtime overhead.
+This is the main source code repository for [Rust]. It contains the compiler, standard library,
+and documentation.
 
-This repo contains the code for `rustc`, the Rust compiler, as well
-as standard libraries, tools and documentation for Rust.
+[Rust]: https://www.rust-lang.org
 
 ## Quick Start
 
 Read ["Installing Rust"] from [The Book].
 
-["Installing Rust"]: http://doc.rust-lang.org/book/installing-rust.html
-[The Book]: http://doc.rust-lang.org/book/index.html
+["Installing Rust"]: https://doc.rust-lang.org/book/installing-rust.html
+[The Book]: https://doc.rust-lang.org/book/index.html
 
 ## Building from Source
 
@@ -63,15 +61,22 @@ Read ["Installing Rust"] from [The Book].
    tools.
 
    ```sh
-   # Choose one based on platform:
+   # Update package mirrors (may be needed if you have a fresh install of MSYS2)
+   $ pacman -Sy pacman-mirrors
+
+   # Choose one based on platform: 
+   # *** see the note below ***
    $ pacman -S mingw-w64-i686-toolchain
    $ pacman -S mingw-w64-x86_64-toolchain
+
+   # Make git available in MSYS2 (if not already available on path)
+   $ pacman -S git
 
    $ pacman -S base-devel
    ```
 
 3. Run `mingw32_shell.bat` or `mingw64_shell.bat` from wherever you installed
-   MYSY2 (i.e. `C:\msys`), depending on whether you want 32-bit or 64-bit Rust.
+   MSYS2 (i.e. `C:\msys`), depending on whether you want 32-bit or 64-bit Rust.
 
 4. Navigate to Rust's source code, configure and build it:
 
@@ -79,6 +84,38 @@ Read ["Installing Rust"] from [The Book].
    $ ./configure
    $ make && make install
    ```
+> ***Note:*** gcc versions >= 5 currently have issues building LLVM on Windows
+> resulting in a segmentation fault when building Rust. In order to avoid this
+> it may be necessary to obtain an earlier version of gcc such as 4.9.x.  
+> Msys's `pacman` will install the latest version, so for the time being it is
+> recommended to skip gcc toolchain installation step above and use [Mingw-Builds]
+> project's installer instead.  Be sure to add gcc `bin` directory to the path
+> before running `configure`.  
+> For more information on this see issue #28260.
+
+[Mingw-Builds]: http://sourceforge.net/projects/mingw-w64/
+
+## Building Documentation
+
+If you’d like to build the documentation, it’s almost the same:
+
+```sh
+./configure
+$ make docs
+```
+
+Building the documentation requires building the compiler, so the above
+details will apply. Once you have the compiler built, you can
+
+```sh
+$ make docs NO_REBUILD=1
+```
+
+To make sure you don’t re-build the compiler because you made a change
+to some documentation.
+
+The generated documentation will appear in a top-level `doc` directory,
+created by the `make` rule.
 
 ## Notes
 
@@ -115,7 +152,7 @@ The Rust community congregates in a few places:
 
 [Stack Overflow]: http://stackoverflow.com/questions/tagged/rust
 [/r/rust]: http://reddit.com/r/rust
-[users.rust-lang.org]: http://users.rust-lang.org/
+[users.rust-lang.org]: https://users.rust-lang.org/
 
 ## Contributing
 

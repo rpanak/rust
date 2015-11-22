@@ -10,46 +10,66 @@
 
 //! Collection types.
 //!
-//! See [std::collections](../std/collections) for a detailed discussion of collections in Rust.
+//! See [std::collections](../std/collections) for a detailed discussion of
+//! collections in Rust.
 
 // Do not remove on snapshot creation. Needed for bootstrap. (Issue #22364)
 #![cfg_attr(stage0, feature(custom_attribute))]
 #![crate_name = "collections"]
-#![unstable(feature = "collections")]
 #![staged_api]
 #![crate_type = "rlib"]
-#![doc(html_logo_url = "http://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
+#![unstable(feature = "collections",
+            reason = "library is unlikely to be stabilized with the current \
+                      layout and name, use std::collections instead",
+            issue = "27783")]
+#![doc(html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
        html_favicon_url = "https://doc.rust-lang.org/favicon.ico",
-       html_root_url = "http://doc.rust-lang.org/nightly/",
-       html_playground_url = "http://play.rust-lang.org/")]
-#![doc(test(no_crate_inject))]
+       html_root_url = "https://doc.rust-lang.org/nightly/",
+       html_playground_url = "https://play.rust-lang.org/",
+       issue_tracker_base_url = "https://github.com/rust-lang/rust/issues/",
+       test(no_crate_inject, attr(allow(unused_variables), deny(warnings))))]
 
 #![allow(trivial_casts)]
+#![cfg_attr(test, allow(deprecated))] // rand
+
+// SNAP 1af31d4
+#![allow(unused_features)]
+// SNAP 1af31d4
+#![allow(unused_attributes)]
+
 #![feature(alloc)]
-#![feature(box_syntax)]
 #![feature(box_patterns)]
-#![feature(core)]
+#![feature(box_syntax)]
+#![feature(core_intrinsics)]
+#![feature(core_slice_ext)]
+#![feature(core_str_ext)]
+#![feature(fmt_internals)]
+#![feature(fmt_radix)]
+#![feature(heap_api)]
+#![feature(iter_arith)]
+#![feature(iter_arith)]
 #![feature(lang_items)]
+#![feature(num_bits_bytes)]
+#![feature(oom)]
+#![feature(pattern)]
+#![feature(ptr_as_ref)]
+#![feature(ref_slice)]
+#![feature(slice_bytes)]
+#![feature(slice_patterns)]
 #![feature(staged_api)]
+#![feature(step_by)]
+#![feature(str_char)]
 #![feature(unboxed_closures)]
 #![feature(unicode)]
 #![feature(unique)]
+#![feature(dropck_parametricity)]
 #![feature(unsafe_no_drop_flag, filling_drop)]
-#![feature(step_by)]
-#![feature(str_char)]
-#![feature(str_words)]
-#![feature(slice_patterns)]
-#![feature(debug_builders)]
-#![feature(utf8_error)]
-#![cfg_attr(test, feature(rand, rustc_private, test, hash, collections,
-                          collections_drain, collections_range))]
-#![cfg_attr(test, allow(deprecated))] // rand
+#![feature(decode_utf16)]
+#![feature(drop_in_place)]
+#![cfg_attr(test, feature(clone_from_slice, rand, test))]
 
 #![feature(no_std)]
 #![no_std]
-
-#[macro_use]
-extern crate core;
 
 extern crate rustc_unicode;
 extern crate alloc;
@@ -58,8 +78,6 @@ extern crate alloc;
 #[cfg(test)] extern crate test;
 
 pub use binary_heap::BinaryHeap;
-pub use bit_vec::BitVec;
-pub use bit_set::BitSet;
 pub use btree_map::BTreeMap;
 pub use btree_set::BTreeSet;
 pub use linked_list::LinkedList;
@@ -67,7 +85,6 @@ pub use enum_set::EnumSet;
 pub use vec_deque::VecDeque;
 pub use string::String;
 pub use vec::Vec;
-pub use vec_map::VecMap;
 
 // Needed for the vec! macro
 pub use alloc::boxed;
@@ -76,7 +93,6 @@ pub use alloc::boxed;
 mod macros;
 
 pub mod binary_heap;
-mod bit;
 mod btree;
 pub mod borrow;
 pub mod enum_set;
@@ -88,35 +104,18 @@ pub mod str;
 pub mod string;
 pub mod vec;
 pub mod vec_deque;
-pub mod vec_map;
-
-#[unstable(feature = "collections",
-           reason = "RFC 509")]
-pub mod bit_vec {
-    pub use bit::{BitVec, Iter};
-}
-
-#[unstable(feature = "collections",
-           reason = "RFC 509")]
-pub mod bit_set {
-    pub use bit::{BitSet, Union, Intersection, Difference, SymmetricDifference};
-    pub use bit::SetIter as Iter;
-}
 
 #[stable(feature = "rust1", since = "1.0.0")]
 pub mod btree_map {
+    #[stable(feature = "rust1", since = "1.0.0")]
     pub use btree::map::*;
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
 pub mod btree_set {
+    #[stable(feature = "rust1", since = "1.0.0")]
     pub use btree::set::*;
 }
-
-
-// FIXME(#14344) this shouldn't be necessary
-#[doc(hidden)]
-pub fn fixme_14344_be_sure_to_link_to_collections() {}
 
 #[cfg(not(test))]
 mod std {
@@ -124,6 +123,7 @@ mod std {
 }
 
 /// An endpoint of a range of keys.
+#[unstable(feature = "collections_bound", issue = "27787")]
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub enum Bound<T> {
     /// An inclusive bound.

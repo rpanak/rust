@@ -21,12 +21,15 @@ use middle::cfg::CFGIndex;
 use middle::ty;
 use std::io;
 use std::usize;
-use std::iter::repeat;
 use syntax::ast;
 use syntax::ast_util::IdRange;
-use syntax::visit;
-use syntax::print::{pp, pprust};
+use syntax::print::pp;
+use syntax::print::pprust::PrintState;
 use util::nodemap::NodeMap;
+use rustc_front::hir;
+use rustc_front::intravisit;
+use rustc_front::print::pprust;
+
 
 #[derive(Copy, Clone, Debug)]
 pub enum EntryOrExit {
@@ -111,7 +114,7 @@ impl<'a, 'tcx, O:DataFlowOperator> pprust::PpAnn for DataFlowContext<'a, 'tcx, O
            ps: &mut pprust::State,
            node: pprust::AnnNode) -> io::Result<()> {
         let id = match node {
-            pprust::NodeIdent(_) | pprust::NodeName(_) => 0,
+            pprust::NodeName(_) => 0,
             pprust::NodeExpr(expr) => expr.id,
             pprust::NodeBlock(blk) => blk.id,
             pprust::NodeItem(_) | pprust::NodeSubItem(_) => 0,
@@ -159,7 +162,7 @@ impl<'a, 'tcx, O:DataFlowOperator> pprust::PpAnn for DataFlowContext<'a, 'tcx, O
     }
 }
 
-fn build_nodeid_to_index(decl: Option<&ast::FnDecl>,
+fn build_nodeid_to_index(decl: Option<&hir::FnDecl>,
                          cfg: &cfg::CFG) -> NodeMap<Vec<CFGIndex>> {
     let mut index = NodeMap();
 
@@ -182,7 +185,7 @@ fn build_nodeid_to_index(decl: Option<&ast::FnDecl>,
     return index;
 
     fn add_entries_from_fn_decl(index: &mut NodeMap<Vec<CFGIndex>>,
-                                decl: &ast::FnDecl,
+                                decl: &hir::FnDecl,
                                 entry: CFGIndex) {
         //! add mappings from the ast nodes for the formal bindings to
         //! the entry-node in the graph.
@@ -191,11 +194,11 @@ fn build_nodeid_to_index(decl: Option<&ast::FnDecl>,
             index: &'a mut NodeMap<Vec<CFGIndex>>,
         }
         let mut formals = Formals { entry: entry, index: index };
-        visit::walk_fn_decl(&mut formals, decl);
-        impl<'a, 'v> visit::Visitor<'v> for Formals<'a> {
-            fn visit_pat(&mut self, p: &ast::Pat) {
+        intravisit::walk_fn_decl(&mut formals, decl);
+        impl<'a, 'v> intravisit::Visitor<'v> for Formals<'a> {
+            fn visit_pat(&mut self, p: &hir::Pat) {
                 self.index.entry(p.id).or_insert(vec![]).push(self.entry);
-                visit::walk_pat(self, p)
+                intravisit::walk_pat(self, p)
             }
         }
     }
@@ -223,7 +226,7 @@ pub enum KillFrom {
 impl<'a, 'tcx, O:DataFlowOperator> DataFlowContext<'a, 'tcx, O> {
     pub fn new(tcx: &'a ty::ctxt<'tcx>,
                analysis_name: &'static str,
-               decl: Option<&ast::FnDecl>,
+               decl: Option<&hir::FnDecl>,
                cfg: &cfg::CFG,
                oper: O,
                id_range: IdRange,
@@ -239,11 +242,11 @@ impl<'a, 'tcx, O:DataFlowOperator> DataFlowContext<'a, 'tcx, O> {
 
         let entry = if oper.initial_value() { usize::MAX } else {0};
 
-        let zeroes: Vec<_> = repeat(0).take(num_nodes * words_per_id).collect();
-        let gens: Vec<_> = zeroes.clone();
-        let kills1: Vec<_> = zeroes.clone();
-        let kills2: Vec<_> = zeroes;
-        let on_entry: Vec<_> = repeat(entry).take(num_nodes * words_per_id).collect();
+        let zeroes = vec![0; num_nodes * words_per_id];
+        let gens = zeroes.clone();
+        let kills1 = zeroes.clone();
+        let kills2 = zeroes;
+        let on_entry = vec![entry; num_nodes * words_per_id];
 
         let nodeid_to_index = build_nodeid_to_index(decl, cfg);
 
@@ -496,7 +499,7 @@ impl<'a, 'tcx, O:DataFlowOperator> DataFlowContext<'a, 'tcx, O> {
 
 impl<'a, 'tcx, O:DataFlowOperator+Clone+'static> DataFlowContext<'a, 'tcx, O> {
 //                                ^^^^^^^^^^^^^ only needed for pretty printing
-    pub fn propagate(&mut self, cfg: &cfg::CFG, blk: &ast::Block) {
+    pub fn propagate(&mut self, cfg: &cfg::CFG, blk: &hir::Block) {
         //! Performs the data flow analysis.
 
         if self.bits_per_id == 0 {
@@ -511,7 +514,7 @@ impl<'a, 'tcx, O:DataFlowOperator+Clone+'static> DataFlowContext<'a, 'tcx, O> {
                 changed: true
             };
 
-            let mut temp: Vec<_> = repeat(0).take(words_per_id).collect();
+            let mut temp = vec![0; words_per_id];
             while propcx.changed {
                 propcx.changed = false;
                 propcx.reset(&mut temp);
@@ -529,8 +532,8 @@ impl<'a, 'tcx, O:DataFlowOperator+Clone+'static> DataFlowContext<'a, 'tcx, O> {
     }
 
     fn pretty_print_to<'b>(&self, wr: Box<io::Write + 'b>,
-                           blk: &ast::Block) -> io::Result<()> {
-        let mut ps = pprust::rust_printer_annotated(wr, self);
+                           blk: &hir::Block) -> io::Result<()> {
+        let mut ps = pprust::rust_printer_annotated(wr, self, None);
         try!(ps.cbox(pprust::indent_unit));
         try!(ps.ibox(0));
         try!(ps.print_block(blk));
@@ -634,7 +637,7 @@ fn bitwise<Op:BitwiseOperator>(out_vec: &mut [usize],
                                op: &Op) -> bool {
     assert_eq!(out_vec.len(), in_vec.len());
     let mut changed = false;
-    for (out_elt, in_elt) in out_vec.iter_mut().zip(in_vec.iter()) {
+    for (out_elt, in_elt) in out_vec.iter_mut().zip(in_vec) {
         let old_val = *out_elt;
         let new_val = op.join(old_val, *in_elt);
         *out_elt = new_val;

@@ -23,7 +23,6 @@ use std::ffi::CString;
 use std::mem;
 use std::ptr;
 use std::cell::RefCell;
-use std::iter::repeat;
 
 use libc::c_uint;
 
@@ -49,6 +48,16 @@ impl Type {
     #[inline(always)] // So it doesn't kill --opt-level=0 builds of the compiler
     pub fn to_ref(&self) -> TypeRef {
         self.rf
+    }
+
+    pub fn to_string(self: Type) -> String {
+        llvm::build_string(|s| unsafe {
+            llvm::LLVMWriteTypeToString(self.to_ref(), s);
+        }).expect("non-UTF8 type description from LLVM")
+    }
+
+    pub fn to_ref_slice(slice: &[Type]) -> &[TypeRef] {
+        unsafe { mem::transmute(slice) }
     }
 
     pub fn void(ccx: &CrateContext) -> Type {
@@ -144,19 +153,19 @@ impl Type {
     }
 
     pub fn func(args: &[Type], ret: &Type) -> Type {
-        let vec : &[TypeRef] = unsafe { mem::transmute(args) };
-        ty!(llvm::LLVMFunctionType(ret.to_ref(), vec.as_ptr(),
+        let slice: &[TypeRef] = Type::to_ref_slice(args);
+        ty!(llvm::LLVMFunctionType(ret.to_ref(), slice.as_ptr(),
                                    args.len() as c_uint, False))
     }
 
     pub fn variadic_func(args: &[Type], ret: &Type) -> Type {
-        let vec : &[TypeRef] = unsafe { mem::transmute(args) };
-        ty!(llvm::LLVMFunctionType(ret.to_ref(), vec.as_ptr(),
+        let slice: &[TypeRef] = Type::to_ref_slice(args);
+        ty!(llvm::LLVMFunctionType(ret.to_ref(), slice.as_ptr(),
                                    args.len() as c_uint, True))
     }
 
     pub fn struct_(ccx: &CrateContext, els: &[Type], packed: bool) -> Type {
-        let els : &[TypeRef] = unsafe { mem::transmute(els) };
+        let els: &[TypeRef] = Type::to_ref_slice(els);
         ty!(llvm::LLVMStructTypeInContext(ccx.llcx(), els.as_ptr(),
                                           els.len() as c_uint,
                                           packed as Bool))
@@ -169,10 +178,6 @@ impl Type {
 
     pub fn empty_struct(ccx: &CrateContext) -> Type {
         Type::struct_(ccx, &[], false)
-    }
-
-    pub fn vtable(ccx: &CrateContext) -> Type {
-        Type::array(&Type::i8p(ccx).ptr_to(), 1)
     }
 
     pub fn glue_fn(ccx: &CrateContext, t: Type) -> Type {
@@ -208,9 +213,9 @@ impl Type {
     }
 
     pub fn set_struct_body(&mut self, els: &[Type], packed: bool) {
+        let slice: &[TypeRef] = Type::to_ref_slice(els);
         unsafe {
-            let vec : &[TypeRef] = mem::transmute(els);
-            llvm::LLVMStructSetBody(self.to_ref(), vec.as_ptr(),
+            llvm::LLVMStructSetBody(self.to_ref(), slice.as_ptr(),
                                     els.len() as c_uint, packed as Bool)
         }
     }
@@ -257,7 +262,7 @@ impl Type {
             if n_elts == 0 {
                 return Vec::new();
             }
-            let mut elts: Vec<_> = repeat(Type { rf: ptr::null_mut() }).take(n_elts).collect();
+            let mut elts = vec![Type { rf: ptr::null_mut() }; n_elts];
             llvm::LLVMGetStructElementTypes(self.to_ref(),
                                             elts.as_mut_ptr() as *mut TypeRef);
             elts
@@ -271,7 +276,7 @@ impl Type {
     pub fn func_params(&self) -> Vec<Type> {
         unsafe {
             let n_args = llvm::LLVMCountParamTypes(self.to_ref()) as usize;
-            let mut args: Vec<_> = repeat(Type { rf: ptr::null_mut() }).take(n_args).collect();
+            let mut args = vec![Type { rf: ptr::null_mut() }; n_args];
             llvm::LLVMGetParamTypes(self.to_ref(),
                                     args.as_mut_ptr() as *mut TypeRef);
             args
@@ -320,14 +325,12 @@ impl TypeNames {
     }
 
     pub fn type_to_string(&self, ty: Type) -> String {
-        llvm::build_string(|s| unsafe {
-                llvm::LLVMWriteTypeToString(ty.to_ref(), s);
-            }).expect("non-UTF8 type description from LLVM")
+        ty.to_string()
     }
 
     pub fn types_to_str(&self, tys: &[Type]) -> String {
         let strs: Vec<String> = tys.iter().map(|t| self.type_to_string(*t)).collect();
-        format!("[{}]", strs.connect(","))
+        format!("[{}]", strs.join(","))
     }
 
     pub fn val_to_string(&self, val: ValueRef) -> String {

@@ -7,13 +7,13 @@ modification, are permitted provided that the following conditions are
 met:
 
     (1) Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer. 
+    notice, this list of conditions and the following disclaimer.
 
     (2) Redistributions in binary form must reproduce the above copyright
     notice, this list of conditions and the following disclaimer in
     the documentation and/or other materials provided with the
-    distribution.  
-    
+    distribution.
+
     (3) The name of the author may not be used to
     endorse or promote products derived from this software without
     specific prior written permission.
@@ -460,7 +460,7 @@ f23 (int f1line, int f2line)
 		       (unsigned int) bdata.index, j + 1);
 	      bdata.failed = 1;
 	    }
-	}      
+	}
 
       check ("test3", 0, all, f3line, "f23", &bdata.failed);
       check ("test3", 1, all, f2line, "f22", &bdata.failed);
@@ -616,6 +616,8 @@ f33 (int f1line, int f2line)
   return failures;
 }
 
+#if BACKTRACE_SUPPORTS_DATA
+
 int global = 1;
 
 static int
@@ -684,6 +686,8 @@ test5 (void)
   return failures;
 }
 
+#endif /* BACKTRACE_SUPPORTS_DATA  */
+
 static void
 error_callback_create (void *data ATTRIBUTE_UNUSED, const char *msg,
 		       int errnum)
@@ -708,7 +712,9 @@ main (int argc ATTRIBUTE_UNUSED, char **argv)
   test2 ();
   test3 ();
   test4 ();
+#if BACKTRACE_SUPPORTS_DATA
   test5 ();
+#endif
 #endif
 
   exit (failures ? EXIT_FAILURE : EXIT_SUCCESS);

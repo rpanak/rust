@@ -9,7 +9,6 @@
 // except according to those terms.
 
 use std::collections::BTreeSet;
-use std::hash::{SipHasher, self};
 
 #[test]
 fn test_clone_eq() {
@@ -34,7 +33,7 @@ fn test_hash() {
   y.insert(2);
   y.insert(1);
 
-  assert!(hash::hash::<_, SipHasher>(&x) == hash::hash::<_, SipHasher>(&y));
+  assert!(::hash(&x) == ::hash(&y));
 }
 
 struct Counter<'a, 'b> {
@@ -147,17 +146,11 @@ fn test_zip() {
 
     let x = x;
     let y = y;
-    let mut z = x.iter().zip(y.iter());
+    let mut z = x.iter().zip(&y);
 
-    // FIXME: #5801: this needs a type hint to compile...
-    let result: Option<(&usize, & &'static str)> = z.next();
-    assert_eq!(result.unwrap(), (&5, &("bar")));
-
-    let result: Option<(&usize, & &'static str)> = z.next();
-    assert_eq!(result.unwrap(), (&11, &("foo")));
-
-    let result: Option<(&usize, & &'static str)> = z.next();
-    assert!(result.is_none());
+    assert_eq!(z.next().unwrap(), (&5, &("bar")));
+    assert_eq!(z.next().unwrap(), (&11, &("foo")));
+    assert!(z.next().is_none());
 }
 
 #[test]
@@ -183,4 +176,81 @@ fn test_show() {
 
     assert_eq!(set_str, "{1, 2}");
     assert_eq!(format!("{:?}", empty), "{}");
+}
+
+#[test]
+fn test_extend_ref() {
+    let mut a = BTreeSet::new();
+    a.insert(1);
+
+    a.extend(&[2, 3, 4]);
+
+    assert_eq!(a.len(), 4);
+    assert!(a.contains(&1));
+    assert!(a.contains(&2));
+    assert!(a.contains(&3));
+    assert!(a.contains(&4));
+
+    let mut b = BTreeSet::new();
+    b.insert(5);
+    b.insert(6);
+
+    a.extend(&b);
+
+    assert_eq!(a.len(), 6);
+    assert!(a.contains(&1));
+    assert!(a.contains(&2));
+    assert!(a.contains(&3));
+    assert!(a.contains(&4));
+    assert!(a.contains(&5));
+    assert!(a.contains(&6));
+}
+
+#[test]
+fn test_recovery() {
+    use std::cmp::Ordering;
+
+    #[derive(Debug)]
+    struct Foo(&'static str, i32);
+
+    impl PartialEq for Foo {
+        fn eq(&self, other: &Self) -> bool {
+            self.0 == other.0
+        }
+    }
+
+    impl Eq for Foo {}
+
+    impl PartialOrd for Foo {
+        fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+            self.0.partial_cmp(&other.0)
+        }
+    }
+
+    impl Ord for Foo {
+        fn cmp(&self, other: &Self) -> Ordering {
+            self.0.cmp(&other.0)
+        }
+    }
+
+    let mut s = BTreeSet::new();
+    assert_eq!(s.replace(Foo("a", 1)), None);
+    assert_eq!(s.len(), 1);
+    assert_eq!(s.replace(Foo("a", 2)), Some(Foo("a", 1)));
+    assert_eq!(s.len(), 1);
+
+    {
+        let mut it = s.iter();
+        assert_eq!(it.next(), Some(&Foo("a", 2)));
+        assert_eq!(it.next(), None);
+    }
+
+    assert_eq!(s.get(&Foo("a", 1)), Some(&Foo("a", 2)));
+    assert_eq!(s.take(&Foo("a", 1)), Some(Foo("a", 2)));
+    assert_eq!(s.len(), 0);
+
+    assert_eq!(s.get(&Foo("a", 1)), None);
+    assert_eq!(s.take(&Foo("a", 1)), None);
+
+    assert_eq!(s.iter().next(), None);
 }

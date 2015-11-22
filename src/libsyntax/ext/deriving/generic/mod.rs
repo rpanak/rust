@@ -54,6 +54,7 @@
 //! following snippet
 //!
 //! ```rust
+//! # #![allow(dead_code)]
 //! struct A { x : i32 }
 //!
 //! struct B(i32);
@@ -88,7 +89,7 @@
 //!
 //! ```rust
 //! trait PartialEq {
-//!     fn eq(&self, other: &Self);
+//!     fn eq(&self, other: &Self) -> bool;
 //! }
 //! impl PartialEq for i32 {
 //!     fn eq(&self, other: &i32) -> bool {
@@ -174,9 +175,9 @@
 //! A static method on the types above would result in,
 //!
 //! ```{.text}
-//! StaticStruct(<ast::StructDef of A>, Named(vec![(<ident of x>, <span of x>)]))
+//! StaticStruct(<ast::VariantData of A>, Named(vec![(<ident of x>, <span of x>)]))
 //!
-//! StaticStruct(<ast::StructDef of B>, Unnamed(vec![<span of x>]))
+//! StaticStruct(<ast::VariantData of B>, Unnamed(vec![<span of x>]))
 //!
 //! StaticEnum(<ast::EnumDef of C>,
 //!            vec![(<ident of C0>, <span of C0>, Unnamed(vec![<span of i32>])),
@@ -188,12 +189,13 @@ pub use self::SubstructureFields::*;
 use self::StructType::*;
 
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::vec;
 
 use abi::Abi;
 use abi;
 use ast;
-use ast::{EnumDef, Expr, Ident, Generics, StructDef};
+use ast::{EnumDef, Expr, Ident, Generics, VariantData};
 use ast_util;
 use attr;
 use attr::AttrMetaMethods;
@@ -204,7 +206,7 @@ use codemap::Span;
 use diagnostic::SpanHandler;
 use fold::MoveMap;
 use owned_slice::OwnedSlice;
-use parse::token::InternedString;
+use parse::token::{intern, InternedString};
 use parse::token::special_idents;
 use ptr::P;
 
@@ -227,6 +229,9 @@ pub struct TraitDef<'a> {
 
     /// Any extra lifetimes and/or bounds, e.g. `D: serialize::Decoder`
     pub generics: LifetimeBounds<'a>,
+
+    /// Is it an `unsafe` trait?
+    pub is_unsafe: bool,
 
     pub methods: Vec<MethodDef<'a>>,
 
@@ -313,7 +318,7 @@ pub enum SubstructureFields<'a> {
     EnumNonMatchingCollapsed(Vec<Ident>, &'a [P<ast::Variant>], &'a [Ident]),
 
     /// A static method where `Self` is a struct.
-    StaticStruct(&'a ast::StructDef, StaticFields),
+    StaticStruct(&'a ast::VariantData, StaticFields),
     /// A static method where `Self` is an enum.
     StaticEnum(&'a ast::EnumDef, Vec<(Ident, Span, StaticFields)>),
 }
@@ -413,7 +418,7 @@ impl<'a> TraitDef<'a> {
                 let mut attrs = newitem.attrs.clone();
                 attrs.extend(item.attrs.iter().filter(|a| {
                     match &a.name()[..] {
-                        "allow" | "warn" | "deny" | "forbid" => true,
+                        "allow" | "warn" | "deny" | "forbid" | "stable" | "unstable" => true,
                         _ => false,
                     }
                 }).cloned());
@@ -475,7 +480,7 @@ impl<'a> TraitDef<'a> {
                 ident: ident,
                 vis: ast::Inherited,
                 attrs: Vec::new(),
-                node: ast::TypeImplItem(type_def.to_ty(cx,
+                node: ast::ImplItemKind::Type(type_def.to_ty(cx,
                     self.span,
                     type_ident,
                     generics
@@ -505,7 +510,7 @@ impl<'a> TraitDef<'a> {
             bounds.push(cx.typarambound(trait_path.clone()));
 
             // also add in any bounds from the declaration
-            for declared_bound in &*ty_param.bounds {
+            for declared_bound in ty_param.bounds.iter() {
                 bounds.push((*declared_bound).clone());
             }
 
@@ -549,10 +554,20 @@ impl<'a> TraitDef<'a> {
                 .map(|ty_param| ty_param.ident.name)
                 .collect();
 
-            for field_ty in field_tys.into_iter() {
+            let mut processed_field_types = HashSet::new();
+            for field_ty in field_tys {
                 let tys = find_type_parameters(&*field_ty, &ty_param_names);
 
-                for ty in tys.into_iter() {
+                for ty in tys {
+                    // if we have already handled this type, skip it
+                    if let ast::TyPath(_, ref p) = ty.node {
+                        if p.segments.len() == 1
+                            && ty_param_names.contains(&p.segments[0].identifier.name)
+                            || processed_field_types.contains(&p.segments) {
+                            continue;
+                        };
+                        processed_field_types.insert(p.segments.clone());
+                    }
                     let mut bounds: Vec<_> = self.additional_bounds.iter().map(|p| {
                         cx.typarambound(p.to_path(cx, self.span, type_ident, generics))
                     }).collect();
@@ -606,13 +621,26 @@ impl<'a> TraitDef<'a> {
         attr::mark_used(&attr);
         let opt_trait_ref = Some(trait_ref);
         let ident = ast_util::impl_pretty_name(&opt_trait_ref, Some(&*self_type));
-        let mut a = vec![attr];
+        let unused_qual = cx.attribute(
+            self.span,
+            cx.meta_list(self.span,
+                         InternedString::new("allow"),
+                         vec![cx.meta_word(self.span,
+                                           InternedString::new("unused_qualifications"))]));
+        let mut a = vec![attr, unused_qual];
         a.extend(self.attributes.iter().cloned());
+
+        let unsafety = if self.is_unsafe {
+            ast::Unsafety::Unsafe
+        } else {
+            ast::Unsafety::Normal
+        };
+
         cx.item(
             self.span,
             ident,
             a,
-            ast::ItemImpl(ast::Unsafety::Normal,
+            ast::ItemImpl(unsafety,
                           ast::ImplPolarity::Positive,
                           trait_generics,
                           opt_trait_ref,
@@ -622,10 +650,10 @@ impl<'a> TraitDef<'a> {
 
     fn expand_struct_def(&self,
                          cx: &mut ExtCtxt,
-                         struct_def: &'a StructDef,
+                         struct_def: &'a VariantData,
                          type_ident: Ident,
                          generics: &Generics) -> P<ast::Item> {
-        let field_tys: Vec<P<ast::Ty>> = struct_def.fields.iter()
+        let field_tys: Vec<P<ast::Ty>> = struct_def.fields().iter()
             .map(|field| field.node.ty.clone())
             .collect();
 
@@ -672,17 +700,9 @@ impl<'a> TraitDef<'a> {
                        generics: &Generics) -> P<ast::Item> {
         let mut field_tys = Vec::new();
 
-        for variant in enum_def.variants.iter() {
-            match variant.node.kind {
-                ast::VariantKind::TupleVariantKind(ref args) => {
-                    field_tys.extend(args.iter()
-                        .map(|arg| arg.ty.clone()));
-                }
-                ast::VariantKind::StructVariantKind(ref args) => {
-                    field_tys.extend(args.fields.iter()
-                        .map(|field| field.node.ty.clone()));
-                }
-            }
+        for variant in &enum_def.variants {
+            field_tys.extend(variant.node.data.fields().iter()
+                .map(|field| field.node.ty.clone()));
         }
 
         let methods = self.methods.iter().map(|method_def| {
@@ -728,7 +748,7 @@ fn find_repr_type_name(diagnostic: &SpanHandler,
     for a in type_attrs {
         for r in &attr::find_repr_attrs(diagnostic, a) {
             repr_type_name = match *r {
-                attr::ReprAny | attr::ReprPacked => continue,
+                attr::ReprAny | attr::ReprPacked | attr::ReprSimd => continue,
                 attr::ReprExtern => "i32",
 
                 attr::ReprInt(_, attr::SignedInt(ast::TyIs)) => "isize",
@@ -875,17 +895,18 @@ impl<'a> MethodDef<'a> {
             span: trait_.span,
             vis: ast::Inherited,
             ident: method_ident,
-            node: ast::MethodImplItem(ast::MethodSig {
+            node: ast::ImplItemKind::Method(ast::MethodSig {
                 generics: fn_generics,
                 abi: abi,
                 explicit_self: explicit_self,
                 unsafety: unsafety,
+                constness: ast::Constness::NotConst,
                 decl: fn_decl
             }, body_block)
         })
     }
 
-    /// ```
+    /// ```ignore
     /// #[derive(PartialEq)]
     /// struct A { x: i32, y: i32 }
     ///
@@ -907,7 +928,7 @@ impl<'a> MethodDef<'a> {
     fn expand_struct_method_body<'b>(&self,
                                  cx: &mut ExtCtxt,
                                  trait_: &TraitDef<'b>,
-                                 struct_def: &'b StructDef,
+                                 struct_def: &'b VariantData,
                                  type_ident: Ident,
                                  self_args: &[P<Expr>],
                                  nonself_args: &[P<Expr>])
@@ -966,7 +987,7 @@ impl<'a> MethodDef<'a> {
         // make a series of nested matches, to destructure the
         // structs. This is actually right-to-left, but it shouldn't
         // matter.
-        for (arg_expr, pat) in self_args.iter().zip(patterns.iter()) {
+        for (arg_expr, pat) in self_args.iter().zip(patterns) {
             body = cx.expr_match(trait_.span, arg_expr.clone(),
                                      vec!( cx.arm(trait_.span, vec!(pat.clone()), body) ))
         }
@@ -976,7 +997,7 @@ impl<'a> MethodDef<'a> {
     fn expand_static_struct_method_body(&self,
                                         cx: &mut ExtCtxt,
                                         trait_: &TraitDef,
-                                        struct_def: &StructDef,
+                                        struct_def: &VariantData,
                                         type_ident: Ident,
                                         self_args: &[P<Expr>],
                                         nonself_args: &[P<Expr>])
@@ -990,7 +1011,7 @@ impl<'a> MethodDef<'a> {
                                       &StaticStruct(struct_def, summary))
     }
 
-    /// ```
+    /// ```ignore
     /// #[derive(PartialEq)]
     /// enum A {
     ///     A1,
@@ -1041,21 +1062,31 @@ impl<'a> MethodDef<'a> {
     /// variants where all of the variants match, and one catch-all for
     /// when one does not match.
 
+    /// As an optimization we generate code which checks whether all variants
+    /// match first which makes llvm see that C-like enums can be compiled into
+    /// a simple equality check (for PartialEq).
+
     /// The catch-all handler is provided access the variant index values
-    /// for each of the self-args, carried in precomputed variables. (Nota
-    /// bene: the variant index values are not necessarily the
-    /// discriminant values.  See issue #15523.)
+    /// for each of the self-args, carried in precomputed variables.
 
     /// ```{.text}
-    /// match (this, that, ...) {
-    ///   (Variant1, Variant1, Variant1) => ... // delegate Matching on Variant1
-    ///   (Variant2, Variant2, Variant2) => ... // delegate Matching on Variant2
-    ///   ...
-    ///   _ => {
-    ///     let __this_vi = match this { Variant1 => 0, Variant2 => 1, ... };
-    ///     let __that_vi = match that { Variant1 => 0, Variant2 => 1, ... };
+    /// let __self0_vi = unsafe {
+    ///     std::intrinsics::discriminant_value(&self) } as i32;
+    /// let __self1_vi = unsafe {
+    ///     std::intrinsics::discriminant_value(&__arg1) } as i32;
+    /// let __self2_vi = unsafe {
+    ///     std::intrinsics::discriminant_value(&__arg2) } as i32;
+    ///
+    /// if __self0_vi == __self1_vi && __self0_vi == __self2_vi && ... {
+    ///     match (...) {
+    ///         (Variant1, Variant1, ...) => Body1
+    ///         (Variant2, Variant2, ...) => Body2,
+    ///         ...
+    ///         _ => ::core::intrinsics::unreachable()
+    ///     }
+    /// }
+    /// else {
     ///     ... // catch-all remainder can inspect above variant index values.
-    ///   }
     /// }
     /// ```
     fn build_enum_match_tuple<'b>(
@@ -1186,7 +1217,6 @@ impl<'a> MethodDef<'a> {
 
                 cx.arm(sp, vec![single_pat], arm_expr)
             }).collect();
-
         // We will usually need the catch-all after matching the
         // tuples `(VariantK, VariantK, ...)` for each VariantK of the
         // enum.  But:
@@ -1222,13 +1252,16 @@ impl<'a> MethodDef<'a> {
             // ```
             let mut index_let_stmts: Vec<P<ast::Stmt>> = Vec::new();
 
+            //We also build an expression which checks whether all discriminants are equal
+            // discriminant_test = __self0_vi == __self1_vi && __self0_vi == __self2_vi && ...
+            let mut discriminant_test = cx.expr_bool(sp, true);
+
             let target_type_name =
                 find_repr_type_name(&cx.parse_sess.span_diagnostic, type_attrs);
 
-            for (&ident, self_arg) in vi_idents.iter().zip(self_args.iter()) {
-                let path = vec![cx.ident_of_std("core"),
-                                cx.ident_of("intrinsics"),
-                                cx.ident_of("discriminant_value")];
+            let mut first_ident = None;
+            for (&ident, self_arg) in vi_idents.iter().zip(&self_args) {
+                let path = cx.std_path(&["intrinsics", "discriminant_value"]);
                 let call = cx.expr_call_global(
                     sp, path, vec![cx.expr_addr_of(sp, self_arg.clone())]);
                 let variant_value = cx.expr_block(P(ast::Block {
@@ -1242,32 +1275,62 @@ impl<'a> MethodDef<'a> {
                 let variant_disr = cx.expr_cast(sp, variant_value, target_ty);
                 let let_stmt = cx.stmt_let(sp, false, ident, variant_disr);
                 index_let_stmts.push(let_stmt);
+
+                match first_ident {
+                    Some(first) => {
+                        let first_expr = cx.expr_ident(sp, first);
+                        let id = cx.expr_ident(sp, ident);
+                        let test = cx.expr_binary(sp, ast::BiEq, first_expr, id);
+                        discriminant_test = cx.expr_binary(sp, ast::BiAnd, discriminant_test, test)
+                    }
+                    None => {
+                        first_ident = Some(ident);
+                    }
+                }
             }
 
             let arm_expr = self.call_substructure_method(
                 cx, trait_, type_ident, &self_args[..], nonself_args,
                 &catch_all_substructure);
 
-            // Builds the expression:
-            // {
-            //   let __self0_vi = ...;
-            //   let __self1_vi = ...;
-            //   ...
-            //   <delegated expression referring to __self0_vi, et al.>
-            // }
-            let arm_expr = cx.expr_block(
-                cx.block_all(sp, index_let_stmts, Some(arm_expr)));
+            //Since we know that all the arguments will match if we reach the match expression we
+            //add the unreachable intrinsics as the result of the catch all which should help llvm
+            //in optimizing it
+            let path = cx.std_path(&["intrinsics", "unreachable"]);
+            let call = cx.expr_call_global(
+                sp, path, vec![]);
+            let unreachable = cx.expr_block(P(ast::Block {
+                stmts: vec![],
+                expr: Some(call),
+                id: ast::DUMMY_NODE_ID,
+                rules: ast::UnsafeBlock(ast::CompilerGenerated),
+                span: sp }));
+            match_arms.push(cx.arm(sp, vec![cx.pat_wild(sp)], unreachable));
 
-            // Builds arm:
-            // _ => { let __self0_vi = ...;
-            //        let __self1_vi = ...;
-            //        ...
-            //        <delegated expression as above> }
-            let catch_all_match_arm =
-                cx.arm(sp, vec![cx.pat_wild(sp)], arm_expr);
+            // Final wrinkle: the self_args are expressions that deref
+            // down to desired l-values, but we cannot actually deref
+            // them when they are fed as r-values into a tuple
+            // expression; here add a layer of borrowing, turning
+            // `(*self, *__arg_0, ...)` into `(&*self, &*__arg_0, ...)`.
+            let borrowed_self_args = self_args.move_map(|self_arg| cx.expr_addr_of(sp, self_arg));
+            let match_arg = cx.expr(sp, ast::ExprTup(borrowed_self_args));
 
-            match_arms.push(catch_all_match_arm);
-
+            //Lastly we create an expression which branches on all discriminants being equal
+            //  if discriminant_test {
+            //      match (...) {
+            //          (Variant1, Variant1, ...) => Body1
+            //          (Variant2, Variant2, ...) => Body2,
+            //          ...
+            //          _ => ::core::intrinsics::unreachable()
+            //      }
+            //  }
+            //  else {
+            //      <delegated expression referring to __self0_vi, et al.>
+            //  }
+            let all_match = cx.expr_match(sp, match_arg, match_arms);
+            let arm_expr = cx.expr_if(sp, discriminant_test, all_match, Some(arm_expr));
+            cx.expr_block(
+                cx.block_all(sp, index_let_stmts, Some(arm_expr)))
         } else if variants.is_empty() {
             // As an additional wrinkle, For a zero-variant enum A,
             // currently the compiler
@@ -1318,17 +1381,19 @@ impl<'a> MethodDef<'a> {
             // derive Debug on such a type could here generate code
             // that needs the feature gate enabled.)
 
-            return cx.expr_unreachable(sp);
+            cx.expr_unreachable(sp)
         }
+        else {
 
-        // Final wrinkle: the self_args are expressions that deref
-        // down to desired l-values, but we cannot actually deref
-        // them when they are fed as r-values into a tuple
-        // expression; here add a layer of borrowing, turning
-        // `(*self, *__arg_0, ...)` into `(&*self, &*__arg_0, ...)`.
-        let borrowed_self_args = self_args.move_map(|self_arg| cx.expr_addr_of(sp, self_arg));
-        let match_arg = cx.expr(sp, ast::ExprTup(borrowed_self_args));
-        cx.expr_match(sp, match_arg, match_arms)
+            // Final wrinkle: the self_args are expressions that deref
+            // down to desired l-values, but we cannot actually deref
+            // them when they are fed as r-values into a tuple
+            // expression; here add a layer of borrowing, turning
+            // `(*self, *__arg_0, ...)` into `(&*self, &*__arg_0, ...)`.
+            let borrowed_self_args = self_args.move_map(|self_arg| cx.expr_addr_of(sp, self_arg));
+            let match_arg = cx.expr(sp, ast::ExprTup(borrowed_self_args));
+            cx.expr_match(sp, match_arg, match_arms)
+        }
     }
 
     fn expand_static_enum_method_body(&self,
@@ -1341,14 +1406,7 @@ impl<'a> MethodDef<'a> {
         -> P<Expr> {
         let summary = enum_def.variants.iter().map(|v| {
             let ident = v.node.name;
-            let summary = match v.node.kind {
-                ast::TupleVariantKind(ref args) => {
-                    Unnamed(args.iter().map(|va| trait_.set_expn_info(cx, va.ty.span)).collect())
-                }
-                ast::StructVariantKind(ref struct_def) => {
-                    trait_.summarise_struct(cx, &**struct_def)
-                }
-            };
+            let summary = trait_.summarise_struct(cx, &v.node.data);
             (ident, v.span, summary)
         }).collect();
         self.call_substructure_method(cx, trait_, type_ident,
@@ -1374,8 +1432,7 @@ impl<'a> TraitDef<'a> {
         to_set.expn_id = cx.codemap().record_expansion(codemap::ExpnInfo {
             call_site: to_set,
             callee: codemap::NameAndSpan {
-                name: format!("derive({})", trait_name),
-                format: codemap::MacroAttribute,
+                format: codemap::MacroAttribute(intern(&format!("derive({})", trait_name))),
                 span: Some(self.span),
                 allow_internal_unstable: false,
             }
@@ -1385,10 +1442,10 @@ impl<'a> TraitDef<'a> {
 
     fn summarise_struct(&self,
                         cx: &mut ExtCtxt,
-                        struct_def: &StructDef) -> StaticFields {
+                        struct_def: &VariantData) -> StaticFields {
         let mut named_idents = Vec::new();
         let mut just_spans = Vec::new();
-        for field in struct_def.fields.iter(){
+        for field in struct_def.fields(){
             let sp = self.set_expn_info(cx, field.span);
             match field.node.kind {
                 ast::NamedField(ident, _) => named_idents.push((ident, sp)),
@@ -1421,13 +1478,13 @@ impl<'a> TraitDef<'a> {
     fn create_struct_pattern(&self,
                              cx: &mut ExtCtxt,
                              struct_path: ast::Path,
-                             struct_def: &'a StructDef,
+                             struct_def: &'a VariantData,
                              prefix: &str,
                              mutbl: ast::Mutability)
                              -> (P<ast::Pat>, Vec<(Span, Option<Ident>,
                                                    P<Expr>,
                                                    &'a [ast::Attribute])>) {
-        if struct_def.fields.is_empty() {
+        if struct_def.fields().is_empty() {
             return (cx.pat_enum(self.span, struct_path, vec![]), vec![]);
         }
 
@@ -1435,7 +1492,7 @@ impl<'a> TraitDef<'a> {
         let mut ident_expr = Vec::new();
         let mut struct_type = Unknown;
 
-        for (i, struct_field) in struct_def.fields.iter().enumerate() {
+        for (i, struct_field) in struct_def.fields().iter().enumerate() {
             let sp = self.set_expn_info(cx, struct_field.span);
             let opt_id = match struct_field.node.kind {
                 ast::NamedField(ident, _) if (struct_type == Unknown ||
@@ -1464,7 +1521,7 @@ impl<'a> TraitDef<'a> {
         // struct_type is definitely not Unknown, since struct_def.fields
         // must be nonempty to reach here
         let pattern = if struct_type == Record {
-            let field_pats = subpats.into_iter().zip(ident_expr.iter())
+            let field_pats = subpats.into_iter().zip(&ident_expr)
                                     .map(|(pat, &(_, id, _, _))| {
                 // id is guaranteed to be Some
                 codemap::Spanned {
@@ -1489,34 +1546,7 @@ impl<'a> TraitDef<'a> {
         -> (P<ast::Pat>, Vec<(Span, Option<Ident>, P<Expr>, &'a [ast::Attribute])>) {
         let variant_ident = variant.node.name;
         let variant_path = cx.path(variant.span, vec![enum_ident, variant_ident]);
-        match variant.node.kind {
-            ast::TupleVariantKind(ref variant_args) => {
-                if variant_args.is_empty() {
-                    return (cx.pat_enum(variant.span, variant_path, vec![]), vec![]);
-                }
-
-                let mut paths = Vec::new();
-                let mut ident_expr: Vec<(_, _, _, &'a [ast::Attribute])> = Vec::new();
-                for (i, va) in variant_args.iter().enumerate() {
-                    let sp = self.set_expn_info(cx, va.ty.span);
-                    let ident = cx.ident_of(&format!("{}_{}", prefix, i));
-                    let path1 = codemap::Spanned{span: sp, node: ident};
-                    paths.push(path1);
-                    let expr_path = cx.expr_path(cx.path_ident(sp, ident));
-                    let val = cx.expr(sp, ast::ExprParen(cx.expr_deref(sp, expr_path)));
-                    ident_expr.push((sp, None, val, &[]));
-                }
-
-                let subpats = self.create_subpatterns(cx, paths, mutbl);
-
-                (cx.pat_enum(variant.span, variant_path, subpats),
-                 ident_expr)
-            }
-            ast::StructVariantKind(ref struct_def) => {
-                self.create_struct_pattern(cx, variant_path, &**struct_def,
-                                           prefix, mutbl)
-            }
-        }
+        self.create_struct_pattern(cx, variant_path, &variant.node.data, prefix, mutbl)
     }
 }
 
@@ -1567,7 +1597,7 @@ pub fn cs_fold<F>(use_foldl: bool,
 /// Call the method that is being derived on all the fields, and then
 /// process the collected results. i.e.
 ///
-/// ```
+/// ```ignore
 /// f(cx, span, vec![self_1.method(__arg_1_1, __arg_2_1),
 ///                  self_2.method(__arg_1_2, __arg_2_2)])
 /// ```

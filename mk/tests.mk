@@ -22,9 +22,11 @@ $(eval $(call RUST_CRATE,coretest))
 DEPS_collectionstest :=
 $(eval $(call RUST_CRATE,collectionstest))
 
-TEST_TARGET_CRATES = $(filter-out core rustc_unicode,$(TARGET_CRATES)) \
+TEST_TARGET_CRATES = $(filter-out core rustc_unicode alloc_system libc \
+		     		  alloc_jemalloc,$(TARGET_CRATES)) \
 			collectionstest coretest
-TEST_DOC_CRATES = $(DOC_CRATES)
+TEST_DOC_CRATES = $(DOC_CRATES) arena flate fmt_macros getopts graphviz \
+                log rand rbml serialize syntax term test
 TEST_HOST_CRATES = $(filter-out rustc_typeck rustc_borrowck rustc_resolve \
 		   		rustc_trans rustc_lint,\
                      $(HOST_CRATES))
@@ -95,7 +97,8 @@ ifdef CFG_WINDOWSY_$(1)
                $$(if $$(findstring stage3,$$(1)), \
                     stage3/$$(CFG_LIBDIR_RELATIVE), \
                )))))/rustlib/$$(CFG_BUILD)/lib
-  CFG_RUN_TEST_$(1)=$$(call CFG_RUN_$(1),$$(call CFG_TESTLIB_$(1),$$(1),$$(4)),$$(1))
+  CFG_RUN_TEST_$(1)=$$(TARGET_RPATH_VAR$$(2)_T_$$(3)_H_$$(4)) \
+	  $$(call CFG_RUN_$(1),$$(call CFG_TESTLIB_$(1),$$(1),$$(4)),$$(1))
 endif
 
 # Run the compiletest runner itself under valgrind
@@ -162,7 +165,8 @@ $(foreach doc,$(DOCS), \
   $(eval $(call DOCTEST,md-$(doc),$(S)src/doc/$(doc).md)))
 $(foreach file,$(wildcard $(S)src/doc/trpl/*.md), \
   $(eval $(call DOCTEST,$(file:$(S)src/doc/trpl/%.md=trpl-%),$(file))))
-
+$(foreach file,$(wildcard $(S)src/doc/nomicon/*.md), \
+  $(eval $(call DOCTEST,$(file:$(S)src/doc/nomicon/%.md=nomicon-%),$(file))))
 ######################################################################
 # Main test targets
 ######################################################################
@@ -172,23 +176,24 @@ check: check-sanitycheck cleantmptestlogs cleantestlibs all check-stage2 tidy
 	$(Q)$(CFG_PYTHON) $(S)src/etc/check-summary.py tmp/*.log
 
 # As above but don't bother running tidy.
-check-notidy: cleantmptestlogs cleantestlibs all check-stage2
+check-notidy: check-sanitycheck cleantmptestlogs cleantestlibs all check-stage2
 	$(Q)$(CFG_PYTHON) $(S)src/etc/check-summary.py tmp/*.log
 
 # A slightly smaller set of tests for smoke testing.
-check-lite: cleantestlibs cleantmptestlogs \
+check-lite: check-sanitycheck cleantestlibs cleantmptestlogs \
 	$(foreach crate,$(TEST_TARGET_CRATES),check-stage2-$(crate)) \
 	check-stage2-rpass check-stage2-rpass-valgrind \
 	check-stage2-rfail check-stage2-cfail check-stage2-pfail check-stage2-rmake
 	$(Q)$(CFG_PYTHON) $(S)src/etc/check-summary.py tmp/*.log
 
 # Only check the 'reference' tests: rpass/cfail/rfail/rmake.
-check-ref: cleantestlibs cleantmptestlogs check-stage2-rpass check-stage2-rpass-valgrind \
-	check-stage2-rfail check-stage2-cfail check-stage2-pfail check-stage2-rmake
+check-ref: check-sanitycheck cleantestlibs cleantmptestlogs check-stage2-rpass \
+	check-stage2-rpass-valgrind check-stage2-rfail check-stage2-cfail check-stage2-pfail \
+	check-stage2-rmake
 	$(Q)$(CFG_PYTHON) $(S)src/etc/check-summary.py tmp/*.log
 
 # Only check the docs.
-check-docs: cleantestlibs cleantmptestlogs check-stage2-docs
+check-docs: check-sanitycheck cleantestlibs cleantmptestlogs check-stage2-docs
 	$(Q)$(CFG_PYTHON) $(S)src/etc/check-summary.py tmp/*.log
 
 # Some less critical tests that are not prone to breakage.
@@ -265,9 +270,10 @@ tidy-basic:
 .PHONY: tidy-binaries
 tidy-binaries:
 		@$(call E, check: binaries)
-		$(Q)find $(S)src -type f -perm +a+x \
+		$(Q)find $(S)src -type f \
+		    \( -perm -u+x -or -perm -g+x -or -perm -o+x \) \
 		    -not -name '*.rs' -and -not -name '*.py' \
-		    -and -not -name '*.sh' \
+		    -and -not -name '*.sh' -and -not -name '*.pp' \
 		| grep '^$(S)src/jemalloc' -v \
 		| grep '^$(S)src/libuv' -v \
 		| grep '^$(S)src/llvm' -v \
@@ -278,6 +284,7 @@ tidy-binaries:
 		| grep '^$(S)src/compiler-rt' -v \
 		| grep '^$(S)src/libbacktrace' -v \
 		| grep '^$(S)src/rust-installer' -v \
+		| grep '^$(S)src/liblibc' -v \
 		| xargs $(CFG_PYTHON) $(S)src/etc/check-binaries.py
 
 .PHONY: tidy-errors
@@ -382,11 +389,12 @@ $(3)/stage$(1)/test/$(4)test-$(2)$$(X_$(2)): \
 		$$(CRATEFILE_$(4)) \
 		$$(TESTDEP_$(1)_$(2)_$(3)_$(4))
 	@$$(call E, rustc: $$@)
-	$(Q)CFG_LLVM_LINKAGE_FILE=$$(LLVM_LINKAGE_PATH_$(3)) \
+	$(Q)CFG_LLVM_LINKAGE_FILE=$$(LLVM_LINKAGE_PATH_$(2)) \
 	    $$(subst @,,$$(STAGE$(1)_T_$(2)_H_$(3))) -o $$@ $$< --test \
 		-L "$$(RT_OUTPUT_DIR_$(2))" \
 		$$(LLVM_LIBDIR_RUSTFLAGS_$(2)) \
-		$$(RUSTFLAGS_$(4))
+		$$(RUSTFLAGS_$(4)) \
+		$$(STDCPP_LIBDIR_RUSTFLAGS_$(2))
 
 endef
 
@@ -581,10 +589,6 @@ ifeq ($(CFG_LLDB),)
 CTEST_DISABLE_debuginfo-lldb = "no lldb found"
 endif
 
-ifeq ($(CFG_CLANG),)
-CTEST_DISABLE_codegen = "no clang found"
-endif
-
 ifneq ($(CFG_OSTYPE),apple-darwin)
 CTEST_DISABLE_debuginfo-lldb = "lldb tests are only run on darwin"
 endif
@@ -596,6 +600,10 @@ endif
 ifeq ($(findstring android, $(CFG_TARGET)), android)
 CTEST_DISABLE_debuginfo-gdb =
 CTEST_DISABLE_debuginfo-lldb = "lldb tests are disabled on android"
+endif
+
+ifeq ($(findstring msvc,$(CFG_TARGET)),msvc)
+CTEST_DISABLE_debuginfo-gdb = "gdb tests are disabled on MSVC"
 endif
 
 # CTEST_DISABLE_NONSELFHOST_$(TEST_GROUP), if set, will cause that
@@ -645,7 +653,6 @@ CTEST_COMMON_ARGS$(1)-T-$(2)-H-$(3) := \
         --run-lib-path $$(TLIB$(1)_T_$(2)_H_$(3)) \
         --rustc-path $$(HBIN$(1)_H_$(3))/rustc$$(X_$(3)) \
         --rustdoc-path $$(HBIN$(1)_H_$(3))/rustdoc$$(X_$(3)) \
-        --clang-path $(if $(CFG_CLANG),$(CFG_CLANG),clang) \
         --llvm-bin-path $(CFG_LLVM_INST_DIR_$(CFG_BUILD))/bin \
         --aux-base $$(S)src/test/auxiliary/ \
         --stage-id stage$(1)-$(2) \
@@ -657,9 +664,9 @@ CTEST_COMMON_ARGS$(1)-T-$(2)-H-$(3) := \
         --android-cross-path=$(CFG_ANDROID_CROSS_PATH) \
         --adb-path=$(CFG_ADB) \
         --adb-test-dir=$(CFG_ADB_TEST_DIR) \
-        --host-rustcflags "$(RUSTC_FLAGS_$(3)) $$(CTEST_RUSTC_FLAGS) -L $$(RT_OUTPUT_DIR_$(3))" \
+        --host-rustcflags "$(RUSTC_FLAGS_$(3)) $$(CTEST_RUSTC_FLAGS) -L $$(RT_OUTPUT_DIR_$(3)) $$(STDCPP_LIBDIR_RUSTFLAGS_$(3))" \
         --lldb-python-dir=$(CFG_LLDB_PYTHON_DIR) \
-        --target-rustcflags "$(RUSTC_FLAGS_$(2)) $$(CTEST_RUSTC_FLAGS) -L $$(RT_OUTPUT_DIR_$(2))" \
+        --target-rustcflags "$(RUSTC_FLAGS_$(2)) $$(CTEST_RUSTC_FLAGS) -L $$(RT_OUTPUT_DIR_$(2)) $$(STDCPP_LIBDIR_RUSTFLAGS_$(2))" \
         $$(CTEST_TESTARGS)
 
 ifdef CFG_VALGRIND_RPASS
@@ -894,7 +901,7 @@ ifeq ($(2),$$(CFG_BUILD))
 $$(call TEST_OK_FILE,$(1),$(2),$(3),doc-crate-$(4)): $$(CRATEDOCTESTDEP_$(1)_$(2)_$(3)_$(4))
 	@$$(call E, run doc-crate-$(4) [$(2)])
 	$$(Q)touch $$@.start_time
-	$$(Q)CFG_LLVM_LINKAGE_FILE=$$(LLVM_LINKAGE_PATH_$(3)) \
+	$$(Q)CFG_LLVM_LINKAGE_FILE=$$(LLVM_LINKAGE_PATH_$(2)) \
 	    $$(RUSTDOC_$(1)_T_$(2)_H_$(3)) --test --cfg dox \
 	        $$(CRATEFILE_$(4)) --test-args "$$(TESTARGS)" && \
 	        touch -r $$@.start_time $$@ && rm $$@.start_time
@@ -1043,6 +1050,10 @@ $$(call TEST_OK_FILE,$(1),$(2),$(3),rmake): \
 	@touch $$@
 
 $(3)/test/run-make/%-$(1)-T-$(2)-H-$(3).ok: \
+	export INCLUDE := $$(CFG_MSVC_INCLUDE_PATH_$$(HOST_$(3)))
+$(3)/test/run-make/%-$(1)-T-$(2)-H-$(3).ok: \
+	export LIB := $$(CFG_MSVC_LIB_PATH_$$(HOST_$(3)))
+$(3)/test/run-make/%-$(1)-T-$(2)-H-$(3).ok: \
 		$(S)src/test/run-make/%/Makefile \
 		$$(CSREQ$(1)_T_$(2)_H_$(3))
 	@rm -rf $(3)/test/run-make/$$*
@@ -1052,14 +1063,16 @@ $(3)/test/run-make/%-$(1)-T-$(2)-H-$(3).ok: \
         $$(MAKE) \
 	    $$(HBIN$(1)_H_$(3))/rustc$$(X_$(3)) \
 	    $(3)/test/run-make/$$* \
-	    "$$(CC_$(3)) $$(CFG_GCCISH_CFLAGS_$(3))" \
+	    '$$(CC_$(3))' \
+	    "$$(CFG_GCCISH_CFLAGS_$(3))" \
 	    $$(HBIN$(1)_H_$(3))/rustdoc$$(X_$(3)) \
 	    "$$(TESTNAME)" \
 	    $$(LD_LIBRARY_PATH_ENV_NAME$(1)_T_$(2)_H_$(3)) \
 	    "$$(LD_LIBRARY_PATH_ENV_HOSTDIR$(1)_T_$(2)_H_$(3))" \
 	    "$$(LD_LIBRARY_PATH_ENV_TARGETDIR$(1)_T_$(2)_H_$(3))" \
 	    $(1) \
-	    $$(S)
+	    $$(S) \
+	    $(3)
 	@touch -r $$@.start_time $$@ && rm $$@.start_time
 else
 # FIXME #11094 - The above rule doesn't work right for multiple targets

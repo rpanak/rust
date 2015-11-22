@@ -24,7 +24,7 @@ use mem::{self, replace};
 use ops::{Deref, FnMut, FnOnce, Index};
 use option::Option::{self, Some, None};
 use rand::{self, Rng};
-use result::Result::{self, Ok, Err};
+use result::Result;
 
 use super::table::{
     self,
@@ -43,8 +43,7 @@ use super::table::BucketState::{
 use super::state::HashState;
 
 const INITIAL_LOG2_CAP: usize = 5;
-#[unstable(feature = "std_misc")]
-pub const INITIAL_CAPACITY: usize = 1 << INITIAL_LOG2_CAP; // 2^5
+const INITIAL_CAPACITY: usize = 1 << INITIAL_LOG2_CAP; // 2^5
 
 /// The default behavior of HashMap implements a load factor of 90.9%.
 /// This behavior is characterized by the following condition:
@@ -208,7 +207,7 @@ fn test_resize_policy() {
 /// The hashes are all keyed by the thread-local random number generator
 /// on creation by default. This means that the ordering of the keys is
 /// randomized, but makes the tables more resistant to
-/// denial-of-service attacks (Hash DoS). This behaviour can be
+/// denial-of-service attacks (Hash DoS). This behavior can be
 /// overridden with one of the constructors.
 ///
 /// It is required that the keys implement the `Eq` and `Hash` traits, although
@@ -325,7 +324,7 @@ fn search_hashed<K, V, M, F>(table: M,
     F: FnMut(&K) -> bool,
 {
     // This is the only function where capacity can be zero. To avoid
-    // undefined behaviour when Bucket::new gets the raw bucket in this
+    // undefined behavior when Bucket::new gets the raw bucket in this
     // case, immediately return the appropriate search result.
     if table.capacity() == 0 {
         return TableRef(table);
@@ -544,7 +543,8 @@ impl<K, V, S> HashMap<K, V, S>
     /// # Examples
     ///
     /// ```
-    /// # #![feature(std_misc)]
+    /// #![feature(hashmap_hasher)]
+    ///
     /// use std::collections::HashMap;
     /// use std::collections::hash_map::RandomState;
     ///
@@ -553,7 +553,8 @@ impl<K, V, S> HashMap<K, V, S>
     /// map.insert(1, 2);
     /// ```
     #[inline]
-    #[unstable(feature = "std_misc", reason = "hasher stuff is unclear")]
+    #[unstable(feature = "hashmap_hasher", reason = "hasher stuff is unclear",
+               issue = "27713")]
     pub fn with_hash_state(hash_state: S) -> HashMap<K, V, S> {
         HashMap {
             hash_state:    hash_state,
@@ -573,7 +574,8 @@ impl<K, V, S> HashMap<K, V, S>
     /// # Examples
     ///
     /// ```
-    /// # #![feature(std_misc)]
+    /// #![feature(hashmap_hasher)]
+    ///
     /// use std::collections::HashMap;
     /// use std::collections::hash_map::RandomState;
     ///
@@ -582,7 +584,8 @@ impl<K, V, S> HashMap<K, V, S>
     /// map.insert(1, 2);
     /// ```
     #[inline]
-    #[unstable(feature = "std_misc", reason = "hasher stuff is unclear")]
+    #[unstable(feature = "hashmap_hasher", reason = "hasher stuff is unclear",
+               issue = "27713")]
     pub fn with_capacity_and_hash_state(capacity: usize, hash_state: S)
                                         -> HashMap<K, V, S> {
         let resize_policy = DefaultResizePolicy::new();
@@ -597,6 +600,9 @@ impl<K, V, S> HashMap<K, V, S>
     }
 
     /// Returns the number of elements the map can hold without reallocating.
+    ///
+    /// This number is a lower bound; the `HashMap<K, V>` might be able to hold
+    /// more, but is guaranteed to be able to hold at least this many.
     ///
     /// # Examples
     ///
@@ -766,7 +772,7 @@ impl<K, V, S> HashMap<K, V, S>
     /// If the key already exists, the hashtable will be returned untouched
     /// and a reference to the existing element will be returned.
     fn insert_hashed_nocheck(&mut self, hash: SafeHash, k: K, v: V) -> &mut V {
-        self.insert_or_replace_with(hash, k, v, |_, _, _| ())
+        self.insert_or_replace_with(hash, k, v, |_, _, _, _| ())
     }
 
     fn insert_or_replace_with<'a, F>(&'a mut self,
@@ -775,7 +781,7 @@ impl<K, V, S> HashMap<K, V, S>
                                      v: V,
                                      mut found_existing: F)
                                      -> &'a mut V where
-        F: FnMut(&mut K, &mut V, V),
+        F: FnMut(&mut K, &mut V, K, V),
     {
         // Worst case, we'll find one empty bucket among `size + 1` buckets.
         let size = self.table.size();
@@ -798,7 +804,7 @@ impl<K, V, S> HashMap<K, V, S>
                     let (bucket_k, bucket_v) = bucket.into_mut_refs();
                     debug_assert!(k == *bucket_k);
                     // Key already exists. Get its reference.
-                    found_existing(bucket_k, bucket_v, v);
+                    found_existing(bucket_k, bucket_v, k, v);
                     return bucket_v;
                 }
             }
@@ -906,7 +912,7 @@ impl<K, V, S> HashMap<K, V, S>
     ///     *val *= 2;
     /// }
     ///
-    /// for (key, val) in map.iter() {
+    /// for (key, val) in &map {
     ///     println!("key: {} val: {}", key, val);
     /// }
     /// ```
@@ -980,7 +986,8 @@ impl<K, V, S> HashMap<K, V, S>
     /// # Examples
     ///
     /// ```
-    /// # #![feature(std_misc)]
+    /// #![feature(drain)]
+    ///
     /// use std::collections::HashMap;
     ///
     /// let mut a = HashMap::new();
@@ -995,8 +1002,9 @@ impl<K, V, S> HashMap<K, V, S>
     /// assert!(a.is_empty());
     /// ```
     #[inline]
-    #[unstable(feature = "std_misc",
-               reason = "matches collection reform specification, waiting for dust to settle")]
+    #[unstable(feature = "drain",
+               reason = "matches collection reform specification, waiting for dust to settle",
+               issue = "27711")]
     pub fn drain(&mut self) -> Drain<K, V> {
         fn last_two<A, B, C>((_, b, c): (A, B, C)) -> (B, C) { (b, c) }
         let last_two: fn((SafeHash, K, V)) -> (K, V) = last_two; // coerce to fn pointer
@@ -1096,8 +1104,15 @@ impl<K, V, S> HashMap<K, V, S>
         self.search_mut(k).map(|bucket| bucket.into_mut_refs().1)
     }
 
-    /// Inserts a key-value pair into the map. If the key already had a value
-    /// present in the map, that value is returned. Otherwise, `None` is returned.
+    /// Inserts a key-value pair into the map.
+    ///
+    /// If the map did not have this key present, `None` is returned.
+    ///
+    /// If the map did have this key present, the key is not updated, the
+    /// value is updated and the old value is returned.
+    /// See the [module-level documentation] for more.
+    ///
+    /// [module-level documentation]: index.html#insert-and-complex-keys
     ///
     /// # Examples
     ///
@@ -1118,7 +1133,7 @@ impl<K, V, S> HashMap<K, V, S>
         self.reserve(1);
 
         let mut retval = None;
-        self.insert_or_replace_with(hash, k, v, |_, val_ref, val| {
+        self.insert_or_replace_with(hash, k, v, |_, val_ref, _, val| {
             retval = Some(replace(val_ref, val));
         });
         retval
@@ -1200,6 +1215,7 @@ fn search_entry_hashed<'a, K: Eq, V>(table: &'a mut RawTable<K,V>, hash: SafeHas
     }
 }
 
+#[stable(feature = "rust1", since = "1.0.0")]
 impl<K, V, S> PartialEq for HashMap<K, V, S>
     where K: Eq + Hash, V: PartialEq, S: HashState
 {
@@ -1257,6 +1273,7 @@ pub struct Iter<'a, K: 'a, V: 'a> {
 }
 
 // FIXME(#19839) Remove in favor of `#[derive(Clone)]`
+#[stable(feature = "rust1", since = "1.0.0")]
 impl<'a, K, V> Clone for Iter<'a, K, V> {
     fn clone(&self) -> Iter<'a, K, V> {
         Iter {
@@ -1284,6 +1301,7 @@ pub struct Keys<'a, K: 'a, V: 'a> {
 }
 
 // FIXME(#19839) Remove in favor of `#[derive(Clone)]`
+#[stable(feature = "rust1", since = "1.0.0")]
 impl<'a, K, V> Clone for Keys<'a, K, V> {
     fn clone(&self) -> Keys<'a, K, V> {
         Keys {
@@ -1299,6 +1317,7 @@ pub struct Values<'a, K: 'a, V: 'a> {
 }
 
 // FIXME(#19839) Remove in favor of `#[derive(Clone)]`
+#[stable(feature = "rust1", since = "1.0.0")]
 impl<'a, K, V> Clone for Values<'a, K, V> {
     fn clone(&self) -> Values<'a, K, V> {
         Values {
@@ -1308,8 +1327,9 @@ impl<'a, K, V> Clone for Values<'a, K, V> {
 }
 
 /// HashMap drain iterator.
-#[unstable(feature = "std_misc",
-           reason = "matches collection reform specification, waiting for dust to settle")]
+#[unstable(feature = "drain",
+           reason = "matches collection reform specification, waiting for dust to settle",
+           issue = "27711")]
 pub struct Drain<'a, K: 'a, V: 'a> {
     inner: iter::Map<table::Drain<'a, K, V>, fn((SafeHash, K, V)) -> (K, V)>
 }
@@ -1480,18 +1500,6 @@ impl<'a, K, V> ExactSizeIterator for Drain<'a, K, V> {
 }
 
 impl<'a, K, V> Entry<'a, K, V> {
-    #[unstable(feature = "std_misc",
-               reason = "will soon be replaced by or_insert")]
-    #[deprecated(since = "1.0",
-                reason = "replaced with more ergonomic `or_insert` and `or_insert_with`")]
-    /// Returns a mutable reference to the entry if occupied, or the VacantEntry if vacant
-    pub fn get(self) -> Result<&'a mut V, VacantEntry<'a, K, V>> {
-        match self {
-            Occupied(entry) => Ok(entry.into_mut()),
-            Vacant(entry) => Err(entry),
-        }
-    }
-
     #[stable(feature = "rust1", since = "1.0.0")]
     /// Ensures a value is in the entry by inserting the default if empty, and returns
     /// a mutable reference to the value in the entry.
@@ -1589,6 +1597,14 @@ impl<K, V, S> Extend<(K, V)> for HashMap<K, V, S>
     }
 }
 
+#[stable(feature = "hash_extend_copy", since = "1.4.0")]
+impl<'a, K, V, S> Extend<(&'a K, &'a V)> for HashMap<K, V, S>
+    where K: Eq + Hash + Copy, V: Copy, S: HashState
+{
+    fn extend<T: IntoIterator<Item=(&'a K, &'a V)>>(&mut self, iter: T) {
+        self.extend(iter.into_iter().map(|(&key, &value)| (key, value)));
+    }
+}
 
 /// `RandomState` is the default state for `HashMap` types.
 ///
@@ -1596,27 +1612,30 @@ impl<K, V, S> Extend<(K, V)> for HashMap<K, V, S>
 /// `Hasher`, but the hashers created by two different `RandomState`
 /// instances are unlikely to produce the same result for the same values.
 #[derive(Clone)]
-#[unstable(feature = "std_misc",
-           reason = "hashing an hash maps may be altered")]
+#[unstable(feature = "hashmap_hasher",
+           reason = "hashing an hash maps may be altered",
+           issue = "27713")]
 pub struct RandomState {
     k0: u64,
     k1: u64,
 }
 
-#[unstable(feature = "std_misc",
-           reason = "hashing an hash maps may be altered")]
+#[unstable(feature = "hashmap_hasher",
+           reason = "hashing an hash maps may be altered",
+           issue = "27713")]
 impl RandomState {
     /// Constructs a new `RandomState` that is initialized with random keys.
     #[inline]
-    #[allow(deprecated)]
+    #[allow(deprecated)] // rand
     pub fn new() -> RandomState {
         let mut r = rand::thread_rng();
         RandomState { k0: r.gen(), k1: r.gen() }
     }
 }
 
-#[unstable(feature = "std_misc",
-           reason = "hashing an hash maps may be altered")]
+#[unstable(feature = "hashmap_hasher",
+           reason = "hashing an hash maps may be altered",
+           issue = "27713")]
 impl HashState for RandomState {
     type Hasher = SipHasher;
     #[inline]
@@ -1633,13 +1652,42 @@ impl Default for RandomState {
     }
 }
 
+impl<K, S, Q: ?Sized> super::Recover<Q> for HashMap<K, (), S>
+    where K: Eq + Hash + Borrow<Q>, S: HashState, Q: Eq + Hash
+{
+    type Key = K;
+
+    fn get(&self, key: &Q) -> Option<&K> {
+        self.search(key).map(|bucket| bucket.into_refs().0)
+    }
+
+    fn take(&mut self, key: &Q) -> Option<K> {
+        if self.table.size() == 0 {
+            return None
+        }
+
+        self.search_mut(key).map(|bucket| pop_internal(bucket).0)
+    }
+
+    fn replace(&mut self, key: K) -> Option<K> {
+        let hash = self.make_hash(&key);
+        self.reserve(1);
+
+        let mut retkey = None;
+        self.insert_or_replace_with(hash, key, (), |key_ref, _, key, _| {
+            retkey = Some(replace(key_ref, key));
+        });
+        retkey
+    }
+}
+
 #[cfg(test)]
 mod test_map {
     use prelude::v1::*;
 
     use super::HashMap;
     use super::Entry::{Occupied, Vacant};
-    use iter::{range_inclusive, repeat};
+    use iter::range_inclusive;
     use cell::RefCell;
     use rand::{thread_rng, Rng};
 
@@ -1699,7 +1747,7 @@ mod test_map {
     #[test]
     fn test_drops() {
         DROP_VECTOR.with(|slot| {
-            *slot.borrow_mut() = repeat(0).take(200).collect();
+            *slot.borrow_mut() = vec![0; 200];
         });
 
         {
@@ -1758,7 +1806,7 @@ mod test_map {
     #[test]
     fn test_move_iter_drops() {
         DROP_VECTOR.with(|v| {
-            *v.borrow_mut() = repeat(0).take(200).collect();
+            *v.borrow_mut() = vec![0; 200];
         });
 
         let hm = {
@@ -2320,5 +2368,21 @@ mod test_map {
 
             check(&m);
         }
+    }
+
+    #[test]
+    fn test_extend_ref() {
+        let mut a = HashMap::new();
+        a.insert(1, "one");
+        let mut b = HashMap::new();
+        b.insert(2, "two");
+        b.insert(3, "three");
+
+        a.extend(&b);
+
+        assert_eq!(a.len(), 3);
+        assert_eq!(a[&1], "one");
+        assert_eq!(a[&2], "two");
+        assert_eq!(a[&3], "three");
     }
 }

@@ -8,13 +8,15 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+#if !defined(_WIN32)
+
 #include <stdint.h>
 #include <time.h>
 #include <string.h>
 #include <assert.h>
 #include <stdlib.h>
 
-#if !defined(__WIN32__)
+
 #include <dirent.h>
 #include <pthread.h>
 #include <signal.h>
@@ -22,12 +24,6 @@
 #include <sys/time.h>
 #include <sys/types.h>
 #include <unistd.h>
-#else
-#include <windows.h>
-#include <wincrypt.h>
-#include <stdio.h>
-#include <tchar.h>
-#endif
 
 #ifdef __APPLE__
 #include <TargetConditionals.h>
@@ -38,19 +34,21 @@
 #endif
 #endif
 
-/* Foreign builtins. */
-//include valgrind.h after stdint.h so that uintptr_t is defined for msys2 w64
-#include "valgrind/valgrind.h"
-
-#ifndef _WIN32
 char*
 rust_list_dir_val(struct dirent* entry_ptr) {
     return entry_ptr->d_name;
 }
 
+// Android's struct dirent does have d_type from the very beginning
+// (android-3). _DIRENT_HAVE_D_TYPE is not defined all the way to android-21
+// though...
+#if defined(__ANDROID__)
+# define _DIRENT_HAVE_D_TYPE
+#endif
+
 int
 rust_dir_get_mode(struct dirent* entry_ptr) {
-#if defined(_DIRENT_HAVE_D_TYPE)
+#if defined(_DIRENT_HAVE_D_TYPE) || defined(__APPLE__)
     switch (entry_ptr->d_type) {
         case DT_BLK: return S_IFBLK;
         case DT_CHR: return S_IFCHR;
@@ -58,6 +56,7 @@ rust_dir_get_mode(struct dirent* entry_ptr) {
         case DT_LNK: return S_IFLNK;
         case DT_REG: return S_IFREG;
         case DT_SOCK: return S_IFSOCK;
+        case DT_DIR: return S_IFDIR;
     }
 #endif
     return -1;
@@ -82,23 +81,9 @@ int
 rust_dirent_t_size() {
     return sizeof(struct dirent);
 }
-#endif
 
-uintptr_t
-rust_running_on_valgrind() {
-    return RUNNING_ON_VALGRIND;
-}
-
-#if defined(__WIN32__)
-int
-get_num_cpus() {
-    SYSTEM_INFO sysinfo;
-    GetSystemInfo(&sysinfo);
-
-    return (int) sysinfo.dwNumberOfProcessors;
-}
-#elif defined(__BSD__)
-int
+#if defined(__BSD__)
+static int
 get_num_cpus() {
     /* swiped from http://stackoverflow.com/questions/150355/
        programmatically-find-the-number-of-cores-on-a-machine */
@@ -125,7 +110,7 @@ get_num_cpus() {
     return numCPU;
 }
 #elif defined(__GNUC__)
-int
+static int
 get_num_cpus() {
     return sysconf(_SC_NPROCESSORS_ONLN);
 }
@@ -134,16 +119,6 @@ get_num_cpus() {
 uintptr_t
 rust_get_num_cpus() {
     return get_num_cpus();
-}
-
-unsigned int
-rust_valgrind_stack_register(void *start, void *end) {
-  return VALGRIND_STACK_REGISTER(start, end);
-}
-
-void
-rust_valgrind_stack_deregister(unsigned int id) {
-  VALGRIND_STACK_DEREGISTER(id);
 }
 
 #if defined(__DragonFly__)
@@ -353,7 +328,6 @@ int rust_get_argv_zero(void* p, size_t* sz)
     return -1;
   }
 
-  memset(p, 0, len);
   memcpy(p, argv[0], len);
   free(argv);
   return 0;
@@ -366,7 +340,11 @@ const char * rust_current_exe()
   char **paths;
   size_t sz;
   int i;
-  char buf[2*PATH_MAX], exe[2*PATH_MAX];
+  /* If `PATH_MAX` is defined on the platform, `realpath` will truncate the
+   * resolved path up to `PATH_MAX`. While this can make the resolution fail if
+   * the executable is placed in a deep path, the usage of a buffer whose
+   * length depends on `PATH_MAX` is still memory safe. */
+  char buf[2*PATH_MAX], exe[PATH_MAX];
 
   if (self != NULL)
     return self;
@@ -478,6 +456,8 @@ const char * rust_current_exe() {
 }
 
 #endif
+
+#endif // !defined(_WIN32)
 
 //
 // Local Variables:

@@ -8,13 +8,12 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use core::prelude::*;
 use io::prelude::*;
 use os::unix::prelude::*;
 
 use ffi::{CString, CStr, OsString, OsStr};
 use fmt;
-use io::{self, Error, SeekFrom};
+use io::{self, Error, ErrorKind, SeekFrom};
 use libc::{self, c_int, size_t, off_t, c_char, mode_t};
 use mem;
 use path::{Path, PathBuf};
@@ -22,12 +21,13 @@ use ptr;
 use sync::Arc;
 use sys::fd::FileDesc;
 use sys::platform::raw;
-use sys::{c, cvt, cvt_r};
+use sys::{cvt, cvt_r};
 use sys_common::{AsInner, FromInner};
 use vec::Vec;
 
 pub struct File(FileDesc);
 
+#[derive(Clone)]
 pub struct FileAttr {
     stat: raw::stat,
 }
@@ -43,7 +43,7 @@ unsafe impl Send for Dir {}
 unsafe impl Sync for Dir {}
 
 pub struct DirEntry {
-    buf: Vec<u8>, // actually *mut libc::dirent_t
+    buf: Vec<u8>, // actually *mut libc::dirent
     root: Arc<PathBuf>,
 }
 
@@ -69,22 +69,8 @@ impl FileAttr {
         FilePermissions { mode: (self.stat.st_mode as mode_t) & 0o777 }
     }
 
-    pub fn accessed(&self) -> u64 {
-        self.mktime(self.stat.st_atime as u64, self.stat.st_atime_nsec as u64)
-    }
-    pub fn modified(&self) -> u64 {
-        self.mktime(self.stat.st_mtime as u64, self.stat.st_mtime_nsec as u64)
-    }
-
     pub fn file_type(&self) -> FileType {
         FileType { mode: self.stat.st_mode as mode_t }
-    }
-
-    pub fn raw(&self) -> &raw::stat { &self.stat }
-
-    // times are in milliseconds (currently)
-    fn mktime(&self, secs: u64, nsecs: u64) -> u64 {
-        secs * 1000 + nsecs / 1000000
     }
 }
 
@@ -92,17 +78,22 @@ impl AsInner<raw::stat> for FileAttr {
     fn as_inner(&self) -> &raw::stat { &self.stat }
 }
 
-#[unstable(feature = "metadata_ext", reason = "recently added API")]
+/// OS-specific extension methods for `fs::Metadata`
+#[stable(feature = "metadata_ext", since = "1.1.0")]
 pub trait MetadataExt {
+    /// Gain a reference to the underlying `stat` structure which contains the
+    /// raw information returned by the OS.
+    ///
+    /// The contents of the returned `stat` are **not** consistent across Unix
+    /// platforms. The `os::unix::fs::MetadataExt` trait contains the cross-Unix
+    /// abstractions contained within the raw stat.
+    #[stable(feature = "metadata_ext", since = "1.1.0")]
     fn as_raw_stat(&self) -> &raw::stat;
 }
 
+#[stable(feature = "metadata_ext", since = "1.1.0")]
 impl MetadataExt for ::fs::Metadata {
     fn as_raw_stat(&self) -> &raw::stat { &self.as_inner().stat }
-}
-
-impl MetadataExt for ::os::unix::fs::Metadata {
-    fn as_raw_stat(&self) -> &raw::stat { self.as_inner() }
 }
 
 impl FilePermissions {
@@ -122,7 +113,7 @@ impl FileType {
     pub fn is_file(&self) -> bool { self.is(libc::S_IFREG) }
     pub fn is_symlink(&self) -> bool { self.is(libc::S_IFLNK) }
 
-    fn is(&self, mode: mode_t) -> bool { self.mode & libc::S_IFMT == mode }
+    pub fn is(&self, mode: mode_t) -> bool { self.mode & libc::S_IFMT == mode }
 }
 
 impl FromInner<raw::mode_t> for FilePermissions {
@@ -142,7 +133,7 @@ impl Iterator for ReadDir {
         let mut buf: Vec<u8> = Vec::with_capacity(unsafe {
             rust_dirent_t_size() as usize
         });
-        let ptr = buf.as_mut_ptr() as *mut libc::dirent_t;
+        let ptr = buf.as_mut_ptr() as *mut libc::dirent;
 
         let mut entry_ptr = ptr::null_mut();
         loop {
@@ -188,7 +179,7 @@ impl DirEntry {
 
     pub fn file_type(&self) -> io::Result<FileType> {
         extern {
-            fn rust_dir_get_mode(ptr: *mut libc::dirent_t) -> c_int;
+            fn rust_dir_get_mode(ptr: *mut libc::dirent) -> c_int;
         }
         unsafe {
             match rust_dir_get_mode(self.dirent()) {
@@ -200,21 +191,21 @@ impl DirEntry {
 
     pub fn ino(&self) -> raw::ino_t {
         extern {
-            fn rust_dir_get_ino(ptr: *mut libc::dirent_t) -> raw::ino_t;
+            fn rust_dir_get_ino(ptr: *mut libc::dirent) -> raw::ino_t;
         }
         unsafe { rust_dir_get_ino(self.dirent()) }
     }
 
     fn name_bytes(&self) -> &[u8] {
         extern {
-            fn rust_list_dir_val(ptr: *mut libc::dirent_t) -> *const c_char;
+            fn rust_list_dir_val(ptr: *mut libc::dirent) -> *const c_char;
         }
         unsafe {
             CStr::from_ptr(rust_list_dir_val(self.dirent())).to_bytes()
         }
     }
 
-    fn dirent(&self) -> *mut libc::dirent_t {
+    fn dirent(&self) -> *mut libc::dirent {
         self.buf.as_ptr() as *mut _
     }
 }
@@ -222,7 +213,7 @@ impl DirEntry {
 impl OpenOptions {
     pub fn new() -> OpenOptions {
         OpenOptions {
-            flags: 0,
+            flags: libc::O_CLOEXEC,
             read: false,
             write: false,
             mode: 0o666,
@@ -276,14 +267,15 @@ impl File {
             (false, false) => libc::O_RDONLY,
         };
         let fd = try!(cvt_r(|| unsafe {
-            libc::open(path.as_ptr(), flags, opts.mode)
+            libc::open(path.as_ptr(), flags, opts.mode as c_int)
         }));
         let fd = FileDesc::new(fd);
+        // Even though we open with the O_CLOEXEC flag, still set CLOEXEC here,
+        // in case the open flag is not supported (it's just ignored by the OS
+        // in that case).
         fd.set_cloexec();
         Ok(File(fd))
     }
-
-    pub fn into_fd(self) -> FileDesc { self.0 }
 
     pub fn file_attr(&self) -> io::Result<FileAttr> {
         let mut stat: raw::stat = unsafe { mem::zeroed() };
@@ -342,6 +334,8 @@ impl File {
     }
 
     pub fn fd(&self) -> &FileDesc { &self.0 }
+
+    pub fn into_fd(self) -> FileDesc { self.0 }
 }
 
 impl DirBuilder {
@@ -381,13 +375,31 @@ impl fmt::Debug for File {
             readlink(&p).ok()
         }
 
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(target_os = "macos")]
+        fn get_path(fd: c_int) -> Option<PathBuf> {
+            // FIXME: The use of PATH_MAX is generally not encouraged, but it
+            // is inevitable in this case because OS X defines `fcntl` with
+            // `F_GETPATH` in terms of `MAXPATHLEN`, and there are no
+            // alternatives. If a better method is invented, it should be used
+            // instead.
+            let mut buf = vec![0;libc::PATH_MAX as usize];
+            let n = unsafe { libc::fcntl(fd, libc::F_GETPATH, buf.as_ptr()) };
+            if n == -1 {
+                return None;
+            }
+            let l = buf.iter().position(|&c| c == 0).unwrap();
+            buf.truncate(l as usize);
+            buf.shrink_to_fit();
+            Some(PathBuf::from(OsString::from_vec(buf)))
+        }
+
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         fn get_path(_fd: c_int) -> Option<PathBuf> {
             // FIXME(#24570): implement this for other Unix platforms
             None
         }
 
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         fn get_mode(fd: c_int) -> Option<(bool, bool)> {
             let mode = unsafe { libc::fcntl(fd, libc::F_GETFL) };
             if mode == -1 {
@@ -401,7 +413,7 @@ impl fmt::Debug for File {
             }
         }
 
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         fn get_mode(_fd: c_int) -> Option<(bool, bool)> {
             // FIXME(#24570): implement this for other Unix platforms
             None
@@ -461,18 +473,27 @@ pub fn rmdir(p: &Path) -> io::Result<()> {
 pub fn readlink(p: &Path) -> io::Result<PathBuf> {
     let c_path = try!(cstr(p));
     let p = c_path.as_ptr();
-    let mut len = unsafe { libc::pathconf(p as *mut _, libc::_PC_NAME_MAX) };
-    if len < 0 {
-        len = 1024; // FIXME: read PATH_MAX from C ffi?
+
+    let mut buf = Vec::with_capacity(256);
+
+    loop {
+        let buf_read = try!(cvt(unsafe {
+            libc::readlink(p, buf.as_mut_ptr() as *mut _, buf.capacity() as libc::size_t)
+        })) as usize;
+
+        unsafe { buf.set_len(buf_read); }
+
+        if buf_read != buf.capacity() {
+            buf.shrink_to_fit();
+
+            return Ok(PathBuf::from(OsString::from_vec(buf)));
+        }
+
+        // Trigger the internal buffer resizing logic of `Vec` by requiring
+        // more space than the current capacity. The length is guaranteed to be
+        // the same as the capacity due to the if statement above.
+        buf.reserve(1);
     }
-    let mut buf: Vec<u8> = Vec::with_capacity(len as usize);
-    unsafe {
-        let n = try!(cvt({
-            libc::readlink(p, buf.as_ptr() as *mut c_char, len as size_t)
-        }));
-        buf.set_len(n as usize);
-    }
-    Ok(PathBuf::from(OsString::from_vec(buf)))
 }
 
 pub fn symlink(src: &Path, dst: &Path) -> io::Result<()> {
@@ -507,23 +528,32 @@ pub fn lstat(p: &Path) -> io::Result<FileAttr> {
     Ok(FileAttr { stat: stat })
 }
 
-pub fn utimes(p: &Path, atime: u64, mtime: u64) -> io::Result<()> {
-    let p = try!(cstr(p));
-    let buf = [super::ms_to_timeval(atime), super::ms_to_timeval(mtime)];
-    try!(cvt(unsafe { c::utimes(p.as_ptr(), buf.as_ptr()) }));
-    Ok(())
-}
-
 pub fn canonicalize(p: &Path) -> io::Result<PathBuf> {
     let path = try!(CString::new(p.as_os_str().as_bytes()));
-    let mut buf = vec![0u8; 16 * 1024];
+    let buf;
     unsafe {
-        let r = c::realpath(path.as_ptr(), buf.as_mut_ptr() as *mut _);
+        let r = libc::realpath(path.as_ptr(), ptr::null_mut());
         if r.is_null() {
             return Err(io::Error::last_os_error())
         }
+        buf = CStr::from_ptr(r).to_bytes().to_vec();
+        libc::free(r as *mut _);
     }
-    let p = buf.iter().position(|i| *i == 0).unwrap();
-    buf.truncate(p);
     Ok(PathBuf::from(OsString::from_vec(buf)))
+}
+
+pub fn copy(from: &Path, to: &Path) -> io::Result<u64> {
+    use fs::{File, set_permissions};
+    if !from.is_file() {
+        return Err(Error::new(ErrorKind::InvalidInput,
+                              "the source path is not an existing regular file"))
+    }
+
+    let mut reader = try!(File::open(from));
+    let mut writer = try!(File::create(to));
+    let perm = try!(reader.metadata()).permissions();
+
+    let ret = try!(io::copy(&mut reader, &mut writer));
+    try!(set_permissions(to, perm));
+    Ok(ret)
 }

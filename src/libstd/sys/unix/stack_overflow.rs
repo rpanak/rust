@@ -9,7 +9,6 @@
 // except according to those terms.
 
 use libc;
-use core::prelude::*;
 use self::imp::{make_handler, drop_handler};
 
 pub use self::imp::{init, cleanup};
@@ -35,26 +34,22 @@ impl Drop for Handler {
 #[cfg(any(target_os = "linux",
           target_os = "macos",
           target_os = "bitrig",
+          target_os = "dragonfly",
+          target_os = "freebsd",
+          all(target_os = "netbsd", not(target_vendor = "rumprun")),
           target_os = "openbsd"))]
 mod imp {
-    use sys_common::stack;
-
     use super::Handler;
-    use rt::util::report_overflow;
+    use sys_common::util::report_overflow;
     use mem;
     use ptr;
-    use intrinsics;
-    use self::signal::{siginfo, sigaction, SIGBUS, SIG_DFL,
-                       SA_SIGINFO, SA_ONSTACK, sigaltstack,
-                       SIGSTKSZ};
+    use libc::{sigaction, SIGBUS, SIG_DFL,
+               SA_SIGINFO, SA_ONSTACK, sigaltstack,
+               SIGSTKSZ, sighandler_t};
     use libc;
-    use libc::funcs::posix88::mman::{mmap, munmap};
-    use libc::consts::os::posix88::{SIGSEGV,
-                                    PROT_READ,
-                                    PROT_WRITE,
-                                    MAP_PRIVATE,
-                                    MAP_ANON,
-                                    MAP_FAILED};
+    use libc::{mmap, munmap};
+    use libc::{SIGSEGV, PROT_READ, PROT_WRITE, MAP_PRIVATE, MAP_ANON};
+    use libc::MAP_FAILED;
 
     use sys_common::thread_info;
 
@@ -62,46 +57,64 @@ mod imp {
     // This is initialized in init() and only read from after
     static mut PAGE_SIZE: usize = 0;
 
-    #[no_stack_check]
-    unsafe extern fn signal_handler(signum: libc::c_int,
-                                     info: *mut siginfo,
-                                     _data: *mut libc::c_void) {
-
-        // We can not return from a SIGSEGV or SIGBUS signal.
-        // See: https://www.gnu.org/software/libc/manual/html_node/Handler-Returns.html
-
-        unsafe fn term(signum: libc::c_int) -> ! {
-            use core::mem::transmute;
-
-            signal(signum, transmute(SIG_DFL));
-            raise(signum);
-            intrinsics::abort();
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    unsafe fn siginfo_si_addr(info: *mut libc::siginfo_t) -> *mut libc::c_void {
+        #[repr(C)]
+        struct siginfo_t {
+            a: [libc::c_int; 3], // si_signo, si_code, si_errno,
+            si_addr: *mut libc::c_void,
         }
 
-        // We're calling into functions with stack checks
-        stack::record_sp_limit(0);
-
-        let guard = thread_info::stack_guard().unwrap_or(0);
-        let addr = (*info).si_addr as usize;
-
-        if guard == 0 || addr < guard - PAGE_SIZE || addr >= guard {
-            term(signum);
-        }
-
-        report_overflow();
-
-        intrinsics::abort()
+        (*(info as *const siginfo_t)).si_addr
     }
 
-    static mut MAIN_ALTSTACK: *mut libc::c_void = 0 as *mut libc::c_void;
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    unsafe fn siginfo_si_addr(info: *mut libc::siginfo_t) -> *mut libc::c_void {
+        (*info).si_addr
+    }
 
-    pub unsafe fn init() {
-        let psize = libc::sysconf(libc::consts::os::sysconf::_SC_PAGESIZE);
-        if psize == -1 {
-            panic!("failed to get page size");
+    // Signal handler for the SIGSEGV and SIGBUS handlers. We've got guard pages
+    // (unmapped pages) at the end of every thread's stack, so if a thread ends
+    // up running into the guard page it'll trigger this handler. We want to
+    // detect these cases and print out a helpful error saying that the stack
+    // has overflowed. All other signals, however, should go back to what they
+    // were originally supposed to do.
+    //
+    // This handler currently exists purely to print an informative message
+    // whenever a thread overflows its stack. When run the handler always
+    // un-registers itself after running and then returns (to allow the original
+    // signal to be delivered again). By returning we're ensuring that segfaults
+    // do indeed look like segfaults.
+    //
+    // Returning from this kind of signal handler is technically not defined to
+    // work when reading the POSIX spec strictly, but in practice it turns out
+    // many large systems and all implementations allow returning from a signal
+    // handler to work. For a more detailed explanation see the comments on
+    // #26458.
+    unsafe extern fn signal_handler(signum: libc::c_int,
+                                    info: *mut libc::siginfo_t,
+                                    _data: *mut libc::c_void) {
+        let guard = thread_info::stack_guard().unwrap_or(0);
+        let addr = siginfo_si_addr(info) as usize;
+
+        // If the faulting address is within the guard page, then we print a
+        // message saying so.
+        if guard != 0 && guard - PAGE_SIZE <= addr && addr < guard {
+            report_overflow();
         }
 
-        PAGE_SIZE = psize as usize;
+        // Unregister ourselves by reverting back to the default behavior.
+        let mut action: sigaction = mem::zeroed();
+        action.sa_sigaction = SIG_DFL;
+        sigaction(signum, &action, ptr::null_mut());
+
+        // See comment above for why this function returns.
+    }
+
+    static mut MAIN_ALTSTACK: *mut libc::c_void = ptr::null_mut();
+
+    pub unsafe fn init() {
+        PAGE_SIZE = ::sys::os::page_size();
 
         let mut action: sigaction = mem::zeroed();
         action.sa_flags = SA_SIGINFO | SA_ONSTACK;
@@ -120,7 +133,7 @@ mod imp {
 
     pub unsafe fn make_handler() -> Handler {
         let alt_stack = mmap(ptr::null_mut(),
-                             signal::SIGSTKSZ,
+                             SIGSTKSZ,
                              PROT_READ | PROT_WRITE,
                              MAP_PRIVATE | MAP_ANON,
                              -1,
@@ -129,7 +142,7 @@ mod imp {
             panic!("failed to allocate an alternative stack");
         }
 
-        let mut stack: sigaltstack = mem::zeroed();
+        let mut stack: libc::stack_t = mem::zeroed();
 
         stack.ss_sp = alt_stack;
         stack.ss_flags = 0;
@@ -143,146 +156,17 @@ mod imp {
     pub unsafe fn drop_handler(handler: &mut Handler) {
         munmap(handler._data, SIGSTKSZ);
     }
-
-    pub type sighandler_t = *mut libc::c_void;
-
-    #[cfg(any(all(target_os = "linux", target_arch = "x86"), // may not match
-              all(target_os = "linux", target_arch = "x86_64"),
-              all(target_os = "linux", target_arch = "arm"), // may not match
-              all(target_os = "linux", target_arch = "aarch64"),
-              all(target_os = "linux", target_arch = "mips"), // may not match
-              all(target_os = "linux", target_arch = "mipsel"), // may not match
-              all(target_os = "linux", target_arch = "powerpc"), // may not match
-              target_os = "android"))] // may not match
-    mod signal {
-        use libc;
-        pub use super::sighandler_t;
-
-        pub static SA_ONSTACK: libc::c_int = 0x08000000;
-        pub static SA_SIGINFO: libc::c_int = 0x00000004;
-        pub static SIGBUS: libc::c_int = 7;
-
-        pub static SIGSTKSZ: libc::size_t = 8192;
-
-        pub const SIG_DFL: sighandler_t = 0 as sighandler_t;
-
-        // This definition is not as accurate as it could be, {si_addr} is
-        // actually a giant union. Currently we're only interested in that field,
-        // however.
-        #[repr(C)]
-        pub struct siginfo {
-            si_signo: libc::c_int,
-            si_errno: libc::c_int,
-            si_code: libc::c_int,
-            pub si_addr: *mut libc::c_void
-        }
-
-        #[repr(C)]
-        pub struct sigaction {
-            pub sa_sigaction: sighandler_t,
-            pub sa_mask: sigset_t,
-            pub sa_flags: libc::c_int,
-            sa_restorer: *mut libc::c_void,
-        }
-
-        #[cfg(target_pointer_width = "32")]
-        #[repr(C)]
-        pub struct sigset_t {
-            __val: [libc::c_ulong; 32],
-        }
-        #[cfg(target_pointer_width = "64")]
-        #[repr(C)]
-        pub struct sigset_t {
-            __val: [libc::c_ulong; 16],
-        }
-
-        #[repr(C)]
-        pub struct sigaltstack {
-            pub ss_sp: *mut libc::c_void,
-            pub ss_flags: libc::c_int,
-            pub ss_size: libc::size_t
-        }
-
-    }
-
-    #[cfg(any(target_os = "macos",
-              target_os = "bitrig",
-              target_os = "openbsd"))]
-    mod signal {
-        use libc;
-        pub use super::sighandler_t;
-
-        pub const SA_ONSTACK: libc::c_int = 0x0001;
-        pub const SA_SIGINFO: libc::c_int = 0x0040;
-        pub const SIGBUS: libc::c_int = 10;
-
-        #[cfg(target_os = "macos")]
-        pub const SIGSTKSZ: libc::size_t = 131072;
-        #[cfg(any(target_os = "bitrig", target_os = "openbsd"))]
-        pub const SIGSTKSZ: libc::size_t = 40960;
-
-        pub const SIG_DFL: sighandler_t = 0 as sighandler_t;
-
-        pub type sigset_t = u32;
-
-        // This structure has more fields, but we're not all that interested in
-        // them.
-        #[cfg(target_os = "macos")]
-        #[repr(C)]
-        pub struct siginfo {
-            pub si_signo: libc::c_int,
-            pub si_errno: libc::c_int,
-            pub si_code: libc::c_int,
-            pub pid: libc::pid_t,
-            pub uid: libc::uid_t,
-            pub status: libc::c_int,
-            pub si_addr: *mut libc::c_void
-        }
-
-        #[cfg(any(target_os = "bitrig", target_os = "openbsd"))]
-        #[repr(C)]
-        pub struct siginfo {
-            pub si_signo: libc::c_int,
-            pub si_code: libc::c_int,
-            pub si_errno: libc::c_int,
-            //union
-            pub si_addr: *mut libc::c_void
-        }
-
-        #[repr(C)]
-        pub struct sigaltstack {
-            pub ss_sp: *mut libc::c_void,
-            pub ss_size: libc::size_t,
-            pub ss_flags: libc::c_int
-        }
-
-        #[repr(C)]
-        pub struct sigaction {
-            pub sa_sigaction: sighandler_t,
-            pub sa_mask: sigset_t,
-            pub sa_flags: libc::c_int,
-        }
-    }
-
-    extern {
-        pub fn signal(signum: libc::c_int, handler: sighandler_t) -> sighandler_t;
-        pub fn raise(signum: libc::c_int) -> libc::c_int;
-
-        pub fn sigaction(signum: libc::c_int,
-                         act: *const sigaction,
-                         oldact: *mut sigaction) -> libc::c_int;
-
-        pub fn sigaltstack(ss: *const sigaltstack,
-                           oss: *mut sigaltstack) -> libc::c_int;
-    }
 }
 
 #[cfg(not(any(target_os = "linux",
               target_os = "macos",
               target_os = "bitrig",
+              target_os = "dragonfly",
+              target_os = "freebsd",
+              all(target_os = "netbsd", not(target_vendor = "rumprun")),
               target_os = "openbsd")))]
 mod imp {
-    use libc;
+    use ptr;
 
     pub unsafe fn init() {
     }
@@ -291,7 +175,7 @@ mod imp {
     }
 
     pub unsafe fn make_handler() -> super::Handler {
-        super::Handler { _data: 0 as *mut libc::c_void }
+        super::Handler { _data: ptr::null_mut() }
     }
 
     pub unsafe fn drop_handler(_handler: &mut super::Handler) {

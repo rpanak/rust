@@ -20,7 +20,7 @@ use ptr::P;
 pub fn expand_deriving_eq(cx: &mut ExtCtxt,
                           span: Span,
                           mitem: &MetaItem,
-                          item: Annotatable,
+                          item: &Annotatable,
                           push: &mut FnMut(Annotatable))
 {
     fn cs_total_eq_assert(cx: &mut ExtCtxt, span: Span, substr: &Substructure) -> P<Expr> {
@@ -51,6 +51,7 @@ pub fn expand_deriving_eq(cx: &mut ExtCtxt,
         path: path_std!(cx, core::cmp::Eq),
         additional_bounds: Vec::new(),
         generics: LifetimeBounds::empty(),
+        is_unsafe: false,
         methods: vec!(
             MethodDef {
                 name: "assert_receiver_is_total_eq",
@@ -67,5 +68,5 @@ pub fn expand_deriving_eq(cx: &mut ExtCtxt,
         ),
         associated_types: Vec::new(),
     };
-    trait_def.expand(cx, mitem, &item, push)
+    trait_def.expand(cx, mitem, item, push)
 }

@@ -10,11 +10,14 @@
 
 //! # The Rust Core Library
 //!
-//! The Rust Core Library is the dependency-free foundation of [The
+//! The Rust Core Library is the dependency-free[^free] foundation of [The
 //! Rust Standard Library](../std/index.html). It is the portable glue
 //! between the language and its libraries, defining the intrinsic and
 //! primitive building blocks of all Rust code. It links to no
 //! upstream libraries, no system libraries, and no libc.
+//!
+//! [^free]: Strictly speaking, there are some symbols which are needed but
+//!          they aren't always necessary.
 //!
 //! The core library is *minimal*: it isn't even aware of heap allocation,
 //! nor does it provide concurrency or I/O. These things require
@@ -49,31 +52,40 @@
 // Do not remove on snapshot creation. Needed for bootstrap. (Issue #22364)
 #![cfg_attr(stage0, feature(custom_attribute))]
 #![crate_name = "core"]
-#![unstable(feature = "core")]
+#![unstable(feature = "core",
+            reason = "the libcore library has not yet been scrutinized for \
+                      stabilization in terms of structure and naming",
+            issue = "27701")]
 #![staged_api]
 #![crate_type = "rlib"]
-#![doc(html_logo_url = "http://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
+#![doc(html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
        html_favicon_url = "https://doc.rust-lang.org/favicon.ico",
-       html_root_url = "http://doc.rust-lang.org/nightly/",
-       html_playground_url = "http://play.rust-lang.org/")]
-#![doc(test(no_crate_inject))]
+       html_root_url = "https://doc.rust-lang.org/nightly/",
+       html_playground_url = "https://play.rust-lang.org/",
+       issue_tracker_base_url = "https://github.com/rust-lang/rust/issues/")]
+#![doc(test(no_crate_inject, attr(allow(unused_variables), deny(warnings))))]
 
-#![feature(no_std)]
-#![no_std]
-#![allow(raw_pointer_derive)]
+#![no_core]
 #![deny(missing_docs)]
 
-#![feature(intrinsics, lang_items)]
+#![feature(allow_internal_unstable)]
+#![feature(associated_type_defaults)]
+#![feature(concat_idents)]
+#![feature(const_fn)]
+#![feature(custom_attribute)]
+#![feature(fundamental)]
+#![feature(intrinsics)]
+#![feature(lang_items)]
+#![feature(no_core)]
 #![feature(on_unimplemented)]
-#![feature(simd)]
+#![feature(optin_builtin_traits)]
+#![feature(reflect)]
+#![feature(rustc_attrs)]
+#![feature(unwind_attributes)]
+#![cfg_attr(stage0, feature(simd))]
+#![cfg_attr(not(stage0), feature(repr_simd, platform_intrinsics))]
 #![feature(staged_api)]
 #![feature(unboxed_closures)]
-#![feature(rustc_attrs)]
-#![feature(optin_builtin_traits)]
-#![feature(fundamental)]
-#![feature(concat_idents)]
-#![feature(reflect)]
-#![feature(custom_attribute)]
 
 #[macro_use]
 mod macros;
@@ -130,12 +142,13 @@ pub mod cmp;
 pub mod clone;
 pub mod default;
 pub mod convert;
+pub mod borrow;
 
 /* Core types and methods on primitives */
 
 pub mod any;
 pub mod array;
-pub mod atomic;
+pub mod sync;
 pub mod cell;
 pub mod char;
 pub mod panicking;
@@ -143,34 +156,17 @@ pub mod iter;
 pub mod option;
 pub mod raw;
 pub mod result;
+
+#[cfg(stage0)]
+#[path = "simd_old.rs"]
 pub mod simd;
+#[cfg(not(stage0))]
+pub mod simd;
+
 pub mod slice;
 pub mod str;
 pub mod hash;
 pub mod fmt;
 
-#[doc(primitive = "bool")]
-mod bool {
-}
-
 // note: does not need to be public
 mod tuple;
-
-#[doc(hidden)]
-mod core {
-    pub use intrinsics;
-    pub use panicking;
-    pub use fmt;
-    pub use clone;
-    pub use cmp;
-    pub use hash;
-    pub use marker;
-    pub use option;
-    pub use iter;
-}
-
-#[doc(hidden)]
-mod std {
-    // range syntax
-    pub use ops;
-}

@@ -40,13 +40,13 @@ macro_rules! path_local {
 }
 
 macro_rules! pathvec_std {
-    ($cx:expr, $first:ident :: $($rest:ident)::+) => (
-        if $cx.use_std {
-            pathvec!(std :: $($rest)::+)
-        } else {
-            pathvec!($first :: $($rest)::+)
+    ($cx:expr, $first:ident :: $($rest:ident)::+) => ({
+        let mut v = pathvec!($($rest)::+);
+        if let Some(s) = $cx.crate_root {
+            v.insert(0, s);
         }
-    )
+        v
+    })
 }
 
 macro_rules! path_std {
@@ -60,7 +60,7 @@ pub mod clone;
 pub mod encodable;
 pub mod decodable;
 pub mod hash;
-pub mod show;
+pub mod debug;
 pub mod default;
 pub mod primitive;
 
@@ -105,6 +105,7 @@ fn expand_derive(cx: &mut ExtCtxt,
                     feature_gate::emit_feature_err(&cx.parse_sess.span_diagnostic,
                                                    "custom_derive",
                                                    titem.span,
+                                                   feature_gate::GateIssue::Language,
                                                    feature_gate::EXPLAIN_CUSTOM_DERIVE);
                     continue;
                 }
@@ -134,7 +135,7 @@ macro_rules! derive_traits {
                               ecx: &mut ExtCtxt,
                               sp: Span,
                               mitem: &MetaItem,
-                              annotatable: Annotatable,
+                              annotatable: &Annotatable,
                               push: &mut FnMut(Annotatable)) {
                         warn_if_deprecated(ecx, sp, $name);
                         $func(ecx, sp, mitem, annotatable, push);
@@ -172,7 +173,7 @@ derive_traits! {
     "PartialOrd" => partial_ord::expand_deriving_partial_ord,
     "Ord" => ord::expand_deriving_ord,
 
-    "Debug" => show::expand_deriving_show,
+    "Debug" => debug::expand_deriving_debug,
 
     "Default" => default::expand_deriving_default,
 
@@ -183,7 +184,6 @@ derive_traits! {
     "Copy" => bounds::expand_deriving_copy,
 
     // deprecated
-    "Show" => show::expand_deriving_show,
     "Encodable" => encodable::expand_deriving_encodable,
     "Decodable" => decodable::expand_deriving_decodable,
 }
@@ -191,7 +191,6 @@ derive_traits! {
 #[inline] // because `name` is a compile-time constant
 fn warn_if_deprecated(ecx: &mut ExtCtxt, sp: Span, name: &str) {
     if let Some(replacement) = match name {
-        "Show" => Some("Debug"),
         "Encodable" => Some("RustcEncodable"),
         "Decodable" => Some("RustcDecodable"),
         _ => None,

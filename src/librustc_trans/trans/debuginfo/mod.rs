@@ -18,28 +18,38 @@ use self::utils::{DIB, span_start, assert_type_for_node_id, contains_nodebug_att
                   create_DIArray, is_node_local_to_unit};
 use self::namespace::{namespace_for_item, NamespaceTreeNode};
 use self::type_names::compute_debuginfo_type_name;
-use self::metadata::{type_metadata, file_metadata, scope_metadata, TypeMap, compile_unit_metadata};
+use self::metadata::{type_metadata, diverging_type_metadata};
+use self::metadata::{file_metadata, scope_metadata, TypeMap, compile_unit_metadata};
 use self::source_loc::InternalDebugLocation;
 
 use llvm;
 use llvm::{ModuleRef, ContextRef, ValueRef};
 use llvm::debuginfo::{DIFile, DIType, DIScope, DIBuilderRef, DISubprogram, DIArray,
                       DIDescriptor, FlagPrototyped};
+use middle::def_id::DefId;
+use middle::infer::normalize_associated_type;
 use middle::subst::{self, Substs};
+use rustc_front;
+use rustc_front::hir;
+
 use trans::common::{NodeIdAndSpan, CrateContext, FunctionContext, Block};
 use trans;
-use trans::monomorphize;
-use middle::ty::{self, Ty, ClosureTyper};
+use trans::{monomorphize, type_of};
+use middle::infer;
+use middle::ty::{self, Ty};
 use session::config::{self, FullDebugInfo, LimitedDebugInfo, NoDebugInfo};
-use util::nodemap::{DefIdMap, NodeMap, FnvHashMap, FnvHashSet};
+use util::nodemap::{NodeMap, FnvHashMap, FnvHashSet};
+use rustc::front::map as hir_map;
 
 use libc::c_uint;
 use std::cell::{Cell, RefCell};
 use std::ffi::CString;
 use std::ptr;
 use std::rc::Rc;
+
 use syntax::codemap::{Span, Pos};
-use syntax::{ast, codemap, ast_util, ast_map};
+use syntax::{abi, ast, codemap};
+use syntax::attr::IntType;
 use syntax::parse::token::{self, special_idents};
 
 pub mod gdb;
@@ -72,7 +82,7 @@ pub struct CrateDebugContext<'tcx> {
     builder: DIBuilderRef,
     current_debug_location: Cell<InternalDebugLocation>,
     created_files: RefCell<FnvHashMap<String, DIFile>>,
-    created_enum_disr_types: RefCell<DefIdMap<DIType>>,
+    created_enum_disr_types: RefCell<FnvHashMap<(DefId, IntType), DIType>>,
 
     type_map: RefCell<TypeMap<'tcx>>,
     namespace_map: RefCell<FnvHashMap<Vec<ast::Name>, Rc<NamespaceTreeNode>>>,
@@ -93,7 +103,7 @@ impl<'tcx> CrateDebugContext<'tcx> {
             builder: builder,
             current_debug_location: Cell::new(InternalDebugLocation::UnknownLocation),
             created_files: RefCell::new(FnvHashMap()),
-            created_enum_disr_types: RefCell::new(DefIdMap()),
+            created_enum_disr_types: RefCell::new(FnvHashMap()),
             type_map: RefCell::new(TypeMap::new()),
             namespace_map: RefCell::new(FnvHashMap()),
             composite_types_completed: RefCell::new(FnvHashSet()),
@@ -193,7 +203,7 @@ pub fn finalize(cx: &CrateContext) {
         // Prevent bitcode readers from deleting the debug info.
         let ptr = "Debug Info Version\0".as_ptr();
         llvm::LLVMRustAddModuleFlag(cx.llmod(), ptr as *const _,
-                                    llvm::LLVMRustDebugMetadataVersion);
+                                    llvm::LLVMRustDebugMetadataVersion());
     };
 }
 
@@ -221,19 +231,19 @@ pub fn create_function_debug_context<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
         return FunctionDebugContext::FunctionWithoutDebugInfo;
     }
 
-    let empty_generics = ast_util::empty_generics();
+    let empty_generics = rustc_front::util::empty_generics();
 
     let fnitem = cx.tcx().map.get(fn_ast_id);
 
     let (name, fn_decl, generics, top_level_block, span, has_path) = match fnitem {
-        ast_map::NodeItem(ref item) => {
+        hir_map::NodeItem(ref item) => {
             if contains_nodebug_attribute(&item.attrs) {
                 return FunctionDebugContext::FunctionWithoutDebugInfo;
             }
 
             match item.node {
-                ast::ItemFn(ref fn_decl, _, _, ref generics, ref top_level_block) => {
-                    (item.ident.name, fn_decl, generics, top_level_block, item.span, true)
+                hir::ItemFn(ref fn_decl, _, _, _, ref generics, ref top_level_block) => {
+                    (item.name, fn_decl, generics, top_level_block, item.span, true)
                 }
                 _ => {
                     cx.sess().span_bug(item.span,
@@ -241,14 +251,14 @@ pub fn create_function_debug_context<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
                 }
             }
         }
-        ast_map::NodeImplItem(impl_item) => {
+        hir_map::NodeImplItem(impl_item) => {
             match impl_item.node {
-                ast::MethodImplItem(ref sig, ref body) => {
+                hir::ImplItemKind::Method(ref sig, ref body) => {
                     if contains_nodebug_attribute(&impl_item.attrs) {
                         return FunctionDebugContext::FunctionWithoutDebugInfo;
                     }
 
-                    (impl_item.ident.name,
+                    (impl_item.name,
                      &sig.decl,
                      &sig.generics,
                      body,
@@ -262,9 +272,9 @@ pub fn create_function_debug_context<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
                 }
             }
         }
-        ast_map::NodeExpr(ref expr) => {
+        hir_map::NodeExpr(ref expr) => {
             match expr.node {
-                ast::ExprClosure(_, ref fn_decl, ref top_level_block) => {
+                hir::ExprClosure(_, ref fn_decl, ref top_level_block) => {
                     let name = format!("fn{}", token::gensym("fn"));
                     let name = token::intern(&name[..]);
                     (name, fn_decl,
@@ -280,14 +290,14 @@ pub fn create_function_debug_context<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
                         "create_function_debug_context: expected an expr_fn_block here")
             }
         }
-        ast_map::NodeTraitItem(trait_item) => {
+        hir_map::NodeTraitItem(trait_item) => {
             match trait_item.node {
-                ast::MethodTraitItem(ref sig, Some(ref body)) => {
+                hir::MethodTraitItem(ref sig, Some(ref body)) => {
                     if contains_nodebug_attribute(&trait_item.attrs) {
                         return FunctionDebugContext::FunctionWithoutDebugInfo;
                     }
 
-                    (trait_item.ident.name,
+                    (trait_item.name,
                      &sig.decl,
                      &sig.generics,
                      body,
@@ -302,9 +312,9 @@ pub fn create_function_debug_context<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
                 }
             }
         }
-        ast_map::NodeForeignItem(..) |
-        ast_map::NodeVariant(..) |
-        ast_map::NodeStructCtor(..) => {
+        hir_map::NodeForeignItem(..) |
+        hir_map::NodeVariant(..) |
+        hir_map::NodeStructCtor(..) => {
             return FunctionDebugContext::FunctionWithoutDebugInfo;
         }
         _ => cx.sess().bug(&format!("create_function_debug_context: \
@@ -323,7 +333,6 @@ pub fn create_function_debug_context<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
     let function_type_metadata = unsafe {
         let fn_signature = get_function_signature(cx,
                                                   fn_ast_id,
-                                                  &*fn_decl,
                                                   param_substs,
                                                   span);
         llvm::LLVMDIBuilderCreateSubroutineType(DIB(cx), file_metadata, fn_signature)
@@ -331,19 +340,20 @@ pub fn create_function_debug_context<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
 
     // Get_template_parameters() will append a `<...>` clause to the function
     // name if necessary.
-    let mut function_name = String::from_str(&token::get_name(name));
+    let mut function_name = name.to_string();
     let template_parameters = get_template_parameters(cx,
                                                       generics,
                                                       param_substs,
                                                       file_metadata,
                                                       &mut function_name);
 
-    // There is no ast_map::Path for ast::ExprClosure-type functions. For now,
+    // There is no hir_map::Path for hir::ExprClosure-type functions. For now,
     // just don't put them into a namespace. In the future this could be improved
-    // somehow (storing a path in the ast_map, or construct a path using the
+    // somehow (storing a path in the hir_map, or construct a path using the
     // enclosing function).
     let (linkage_name, containing_scope) = if has_path {
-        let namespace_node = namespace_for_item(cx, ast_util::local_def(fn_ast_id));
+        let fn_ast_def_id = cx.tcx().map.local_def_id(fn_ast_id);
+        let namespace_node = namespace_for_item(cx, fn_ast_def_id);
         let linkage_name = namespace_node.mangled_name_of_contained_item(
             &function_name[..]);
         let containing_scope = namespace_node.scope;
@@ -400,49 +410,67 @@ pub fn create_function_debug_context<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
 
     fn get_function_signature<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
                                         fn_ast_id: ast::NodeId,
-                                        fn_decl: &ast::FnDecl,
                                         param_substs: &Substs<'tcx>,
                                         error_reporting_span: Span) -> DIArray {
         if cx.sess().opts.debuginfo == LimitedDebugInfo {
             return create_DIArray(DIB(cx), &[]);
         }
 
-        let mut signature = Vec::with_capacity(fn_decl.inputs.len() + 1);
-
         // Return type -- llvm::DIBuilder wants this at index 0
         assert_type_for_node_id(cx, fn_ast_id, error_reporting_span);
-        let return_type = ty::node_id_to_type(cx.tcx(), fn_ast_id);
-        let return_type = monomorphize::apply_param_substs(cx.tcx(),
-                                                           param_substs,
-                                                           &return_type);
-        if ty::type_is_nil(return_type) {
-            signature.push(ptr::null_mut())
+        let fn_type = cx.tcx().node_id_to_type(fn_ast_id);
+        let fn_type = monomorphize::apply_param_substs(cx.tcx(), param_substs, &fn_type);
+
+        let (sig, abi) = match fn_type.sty {
+            ty::TyBareFn(_, ref barefnty) => {
+                let sig = cx.tcx().erase_late_bound_regions(&barefnty.sig);
+                let sig = infer::normalize_associated_type(cx.tcx(), &sig);
+                (sig, barefnty.abi)
+            }
+            ty::TyClosure(def_id, ref substs) => {
+                let closure_type = cx.tcx().closure_type(def_id, substs);
+                let sig = cx.tcx().erase_late_bound_regions(&closure_type.sig);
+                let sig = infer::normalize_associated_type(cx.tcx(), &sig);
+                (sig, closure_type.abi)
+            }
+
+            _ => cx.sess().bug("get_function_metdata: Expected a function type!")
+        };
+
+        let mut signature = Vec::with_capacity(sig.inputs.len() + 1);
+
+        // Return type -- llvm::DIBuilder wants this at index 0
+        signature.push(match sig.output {
+            ty::FnConverging(ret_ty) => match ret_ty.sty {
+                ty::TyTuple(ref tys) if tys.is_empty() => ptr::null_mut(),
+                _ => type_metadata(cx, ret_ty, codemap::DUMMY_SP)
+            },
+            ty::FnDiverging => diverging_type_metadata(cx)
+        });
+
+        let inputs = &if abi == abi::RustCall {
+            type_of::untuple_arguments(cx, &sig.inputs)
         } else {
-            signature.push(type_metadata(cx, return_type, codemap::DUMMY_SP));
-        }
+            sig.inputs
+        };
 
         // Arguments types
-        for arg in &fn_decl.inputs {
-            assert_type_for_node_id(cx, arg.pat.id, arg.pat.span);
-            let arg_type = ty::node_id_to_type(cx.tcx(), arg.pat.id);
-            let arg_type = monomorphize::apply_param_substs(cx.tcx(),
-                                                            param_substs,
-                                                            &arg_type);
-            signature.push(type_metadata(cx, arg_type, codemap::DUMMY_SP));
+        for &argument_type in inputs {
+            signature.push(type_metadata(cx, argument_type, codemap::DUMMY_SP));
         }
 
         return create_DIArray(DIB(cx), &signature[..]);
     }
 
     fn get_template_parameters<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
-                                         generics: &ast::Generics,
+                                         generics: &hir::Generics,
                                          param_substs: &Substs<'tcx>,
                                          file_metadata: DIFile,
                                          name_to_append_suffix_to: &mut String)
                                          -> DIArray
     {
         let self_type = param_substs.self_ty();
-        let self_type = monomorphize::normalize_associated_type(cx.tcx(), &self_type);
+        let self_type = normalize_associated_type(cx.tcx(), &self_type);
 
         // Only true for static default methods:
         let has_self_type = self_type.is_some();
@@ -478,16 +506,16 @@ pub fn create_function_debug_context<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
                                                               actual_self_type,
                                                               codemap::DUMMY_SP);
 
-                let name = token::get_name(special_idents::type_self.name);
+                let name = special_idents::type_self.name.as_str();
 
                 let name = CString::new(name.as_bytes()).unwrap();
                 let param_metadata = unsafe {
                     llvm::LLVMDIBuilderCreateTemplateTypeParameter(
                         DIB(cx),
-                        file_metadata,
+                        ptr::null_mut(),
                         name.as_ptr(),
                         actual_self_type_metadata,
-                        ptr::null_mut(),
+                        file_metadata,
                         0,
                         0)
                 };
@@ -498,7 +526,7 @@ pub fn create_function_debug_context<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
 
         // Handle other generic parameters
         let actual_types = param_substs.types.get_slice(subst::FnSpace);
-        for (index, &ast::TyParam{ ident, .. }) in generics.ty_params.iter().enumerate() {
+        for (index, &hir::TyParam{ name, .. }) in generics.ty_params.iter().enumerate() {
             let actual_type = actual_types[index];
             // Add actual type name to <...> clause of function name
             let actual_type_name = compute_debuginfo_type_name(cx,
@@ -513,15 +541,14 @@ pub fn create_function_debug_context<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
             // Again, only create type information if full debuginfo is enabled
             if cx.sess().opts.debuginfo == FullDebugInfo {
                 let actual_type_metadata = type_metadata(cx, actual_type, codemap::DUMMY_SP);
-                let ident = token::get_ident(ident);
-                let name = CString::new(ident.as_bytes()).unwrap();
+                let name = CString::new(name.as_str().as_bytes()).unwrap();
                 let param_metadata = unsafe {
                     llvm::LLVMDIBuilderCreateTemplateTypeParameter(
                         DIB(cx),
-                        file_metadata,
+                        ptr::null_mut(),
                         name.as_ptr(),
                         actual_type_metadata,
-                        ptr::null_mut(),
+                        file_metadata,
                         0,
                         0)
                 };
@@ -547,7 +574,6 @@ fn declare_local<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
     let filename = span_start(cx, span).file.name.clone();
     let file_metadata = file_metadata(cx, &filename[..]);
 
-    let name = token::get_name(variable_name);
     let loc = span_start(cx, span);
     let type_metadata = type_metadata(cx, variable_type, span);
 
@@ -557,7 +583,7 @@ fn declare_local<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
         CapturedVariable => (0, DW_TAG_auto_variable)
     };
 
-    let name = CString::new(name.as_bytes()).unwrap();
+    let name = CString::new(variable_name.as_str().as_bytes()).unwrap();
     match (variable_access, &[][..]) {
         (DirectVariable { alloca }, address_operations) |
         (IndirectVariable {alloca, address_operations}, _) => {
@@ -580,12 +606,14 @@ fn declare_local<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
                                                                           loc.line,
                                                                           loc.col.to_usize()));
             unsafe {
+                let debug_loc = llvm::LLVMGetCurrentDebugLocation(cx.raw_builder());
                 let instr = llvm::LLVMDIBuilderInsertDeclareAtEnd(
                     DIB(cx),
                     alloca,
                     metadata,
                     address_operations.as_ptr(),
                     address_operations.len() as c_uint,
+                    debug_loc,
                     bcx.llbb);
 
                 llvm::LLVMSetInstDebugLocation(trans::build::B(bcx).llbuilder, instr);
@@ -629,7 +657,7 @@ pub trait ToDebugLoc {
     fn debug_loc(&self) -> DebugLoc;
 }
 
-impl ToDebugLoc for ast::Expr {
+impl ToDebugLoc for hir::Expr {
     fn debug_loc(&self) -> DebugLoc {
         DebugLoc::At(self.id, self.span)
     }

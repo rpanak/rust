@@ -8,28 +8,36 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use prelude::v1::*;
-
 use io;
-use libc::consts::os::extra::INVALID_SOCKET;
-use libc::{self, c_int, c_void};
+use libc::{c_int, c_void};
 use mem;
-use net::SocketAddr;
+use net::{SocketAddr, Shutdown};
 use num::One;
 use ops::Neg;
-use rt;
-use sync::{Once, ONCE_INIT};
+use ptr;
+use sync::Once;
 use sys::c;
-use sys_common::{AsInner, FromInner};
+use sys;
+use sys_common::{self, AsInner, FromInner, IntoInner};
+use sys_common::net;
+use time::Duration;
 
 pub type wrlen_t = i32;
 
-pub struct Socket(libc::SOCKET);
+pub mod netc {
+    pub use sys::c::*;
+    pub use sys::c::SOCKADDR as sockaddr;
+    pub use sys::c::SOCKADDR_STORAGE_LH as sockaddr_storage;
+    pub use sys::c::ADDRINFOA as addrinfo;
+    pub use sys::c::ADDRESS_FAMILY as sa_family_t;
+}
+
+pub struct Socket(c::SOCKET);
 
 /// Checks whether the Windows socket interface has been started already, and
 /// if not, starts it.
 pub fn init() {
-    static START: Once = ONCE_INIT;
+    static START: Once = Once::new();
 
     START.call_once(|| unsafe {
         let mut data: c::WSADATA = mem::zeroed();
@@ -37,7 +45,7 @@ pub fn init() {
                                 &mut data);
         assert_eq!(ret, 0);
 
-        let _ = rt::at_exit(|| { c::WSACleanup(); });
+        let _ = sys_common::at_exit(|| { c::WSACleanup(); });
     });
 }
 
@@ -66,7 +74,6 @@ pub fn cvt_gai(err: c_int) -> io::Result<()> {
 }
 
 /// Provides the functionality of `cvt` for a closure.
-#[allow(deprecated)]
 pub fn cvt_r<T, F>(mut f: F) -> io::Result<T>
     where F: FnMut() -> T, T: One + Neg<Output=T> + PartialEq
 {
@@ -76,29 +83,34 @@ pub fn cvt_r<T, F>(mut f: F) -> io::Result<T>
 impl Socket {
     pub fn new(addr: &SocketAddr, ty: c_int) -> io::Result<Socket> {
         let fam = match *addr {
-            SocketAddr::V4(..) => libc::AF_INET,
-            SocketAddr::V6(..) => libc::AF_INET6,
+            SocketAddr::V4(..) => c::AF_INET,
+            SocketAddr::V6(..) => c::AF_INET6,
         };
-        let socket = unsafe {
-            c::WSASocketW(fam, ty, 0, 0 as *mut _, 0,
-                          c::WSA_FLAG_OVERLAPPED | c::WSA_FLAG_NO_HANDLE_INHERIT)
-        };
-        match socket {
-            INVALID_SOCKET => Err(last_error()),
-            n => Ok(Socket(n)),
-        }
+        let socket = try!(unsafe {
+            match c::WSASocketW(fam, ty, 0, ptr::null_mut(), 0,
+                                c::WSA_FLAG_OVERLAPPED) {
+                c::INVALID_SOCKET => Err(last_error()),
+                n => Ok(Socket(n)),
+            }
+        });
+        try!(socket.set_no_inherit());
+        Ok(socket)
     }
 
-    pub fn accept(&self, storage: *mut libc::sockaddr,
-                  len: *mut libc::socklen_t) -> io::Result<Socket> {
-        match unsafe { libc::accept(self.0, storage, len) } {
-            INVALID_SOCKET => Err(last_error()),
-            n => Ok(Socket(n)),
-        }
+    pub fn accept(&self, storage: *mut c::SOCKADDR,
+                  len: *mut c_int) -> io::Result<Socket> {
+        let socket = try!(unsafe {
+            match c::accept(self.0, storage, len) {
+                c::INVALID_SOCKET => Err(last_error()),
+                n => Ok(Socket(n)),
+            }
+        });
+        try!(socket.set_no_inherit());
+        Ok(socket)
     }
 
     pub fn duplicate(&self) -> io::Result<Socket> {
-        unsafe {
+        let socket = try!(unsafe {
             let mut info: c::WSAPROTOCOL_INFO = mem::zeroed();
             try!(cvt(c::WSADuplicateSocketW(self.0,
                                             c::GetCurrentProcessId(),
@@ -107,19 +119,20 @@ impl Socket {
                                 info.iSocketType,
                                 info.iProtocol,
                                 &mut info, 0,
-                                c::WSA_FLAG_OVERLAPPED |
-                                    c::WSA_FLAG_NO_HANDLE_INHERIT) {
-                INVALID_SOCKET => Err(last_error()),
+                                c::WSA_FLAG_OVERLAPPED) {
+                c::INVALID_SOCKET => Err(last_error()),
                 n => Ok(Socket(n)),
             }
-        }
+        });
+        try!(socket.set_no_inherit());
+        Ok(socket)
     }
 
     pub fn read(&self, buf: &mut [u8]) -> io::Result<usize> {
         // On unix when a socket is shut down all further reads return 0, so we
         // do the same on windows to map a shut down socket to returning EOF.
         unsafe {
-            match libc::recv(self.0, buf.as_mut_ptr() as *mut c_void,
+            match c::recv(self.0, buf.as_mut_ptr() as *mut c_void,
                              buf.len() as i32, 0) {
                 -1 if c::WSAGetLastError() == c::WSAESHUTDOWN => Ok(0),
                 -1 => Err(last_error()),
@@ -127,18 +140,70 @@ impl Socket {
             }
         }
     }
+
+    pub fn set_timeout(&self, dur: Option<Duration>,
+                       kind: c_int) -> io::Result<()> {
+        let timeout = match dur {
+            Some(dur) => {
+                let timeout = sys::dur2timeout(dur);
+                if timeout == 0 {
+                    return Err(io::Error::new(io::ErrorKind::InvalidInput,
+                                              "cannot set a 0 duration timeout"));
+                }
+                timeout
+            }
+            None => 0
+        };
+        net::setsockopt(self, c::SOL_SOCKET, kind, timeout)
+    }
+
+    pub fn timeout(&self, kind: c_int) -> io::Result<Option<Duration>> {
+        let raw: c::DWORD = try!(net::getsockopt(self, c::SOL_SOCKET, kind));
+        if raw == 0 {
+            Ok(None)
+        } else {
+            let secs = raw / 1000;
+            let nsec = (raw % 1000) * 1000000;
+            Ok(Some(Duration::new(secs as u64, nsec as u32)))
+        }
+    }
+
+    fn set_no_inherit(&self) -> io::Result<()> {
+        sys::cvt(unsafe {
+            c::SetHandleInformation(self.0 as c::HANDLE,
+                                    c::HANDLE_FLAG_INHERIT, 0)
+        }).map(|_| ())
+    }
+
+    pub fn shutdown(&self, how: Shutdown) -> io::Result<()> {
+        let how = match how {
+            Shutdown::Write => c::SD_SEND,
+            Shutdown::Read => c::SD_RECEIVE,
+            Shutdown::Both => c::SD_BOTH,
+        };
+        try!(cvt(unsafe { c::shutdown(self.0, how) }));
+        Ok(())
+    }
 }
 
 impl Drop for Socket {
     fn drop(&mut self) {
-        let _ = unsafe { libc::closesocket(self.0) };
+        let _ = unsafe { c::closesocket(self.0) };
     }
 }
 
-impl AsInner<libc::SOCKET> for Socket {
-    fn as_inner(&self) -> &libc::SOCKET { &self.0 }
+impl AsInner<c::SOCKET> for Socket {
+    fn as_inner(&self) -> &c::SOCKET { &self.0 }
 }
 
-impl FromInner<libc::SOCKET> for Socket {
-    fn from_inner(sock: libc::SOCKET) -> Socket { Socket(sock) }
+impl FromInner<c::SOCKET> for Socket {
+    fn from_inner(sock: c::SOCKET) -> Socket { Socket(sock) }
+}
+
+impl IntoInner<c::SOCKET> for Socket {
+    fn into_inner(self) -> c::SOCKET {
+        let ret = self.0;
+        mem::forget(self);
+        ret
+    }
 }

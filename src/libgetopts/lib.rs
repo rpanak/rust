@@ -30,9 +30,11 @@
 //! file name following `-o`, and accepts both `-h` and `--help` as optional flags.
 //!
 //! ```{.rust}
+//! #![feature(rustc_private)]
+//!
 //! extern crate getopts;
 //! use getopts::{optopt,optflag,getopts,OptGroup,usage};
-//! use std::os;
+//! use std::env;
 //!
 //! fn do_work(inp: &str, out: Option<String>) {
 //!     println!("{}", inp);
@@ -44,11 +46,11 @@
 //!
 //! fn print_usage(program: &str, opts: &[OptGroup]) {
 //!     let brief = format!("Usage: {} [options]", program);
-//!     print!("{}", usage(brief, opts));
+//!     print!("{}", usage(&brief, opts));
 //! }
 //!
 //! fn main() {
-//!     let args: Vec<String> = os::args();
+//!     let args: Vec<String> = env::args().collect();
 //!
 //!     let program = args[0].clone();
 //!
@@ -56,22 +58,22 @@
 //!         optopt("o", "", "set output file name", "NAME"),
 //!         optflag("h", "help", "print this help menu")
 //!     ];
-//!     let matches = match getopts(args.tail(), opts) {
+//!     let matches = match getopts(&args[1..], opts) {
 //!         Ok(m) => { m }
 //!         Err(f) => { panic!(f.to_string()) }
 //!     };
 //!     if matches.opt_present("h") {
-//!         print_usage(program, opts);
+//!         print_usage(&program, opts);
 //!         return;
 //!     }
 //!     let output = matches.opt_str("o");
 //!     let input = if !matches.free.is_empty() {
 //!         matches.free[0].clone()
 //!     } else {
-//!         print_usage(program, opts);
+//!         print_usage(&program, opts);
 //!         return;
 //!     };
-//!     do_work(input, output);
+//!     do_work(&input, output);
 //! }
 //! ```
 
@@ -80,14 +82,16 @@
 #![cfg_attr(stage0, feature(custom_attribute))]
 #![crate_name = "getopts"]
 #![unstable(feature = "rustc_private",
-            reason = "use the crates.io `getopts` library instead")]
+            reason = "use the crates.io `getopts` library instead",
+            issue = "27812")]
 #![staged_api]
 #![crate_type = "rlib"]
 #![crate_type = "dylib"]
-#![doc(html_logo_url = "http://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
+#![doc(html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
        html_favicon_url = "https://doc.rust-lang.org/favicon.ico",
-       html_root_url = "http://doc.rust-lang.org/nightly/",
-       html_playground_url = "http://play.rust-lang.org/")]
+       html_root_url = "https://doc.rust-lang.org/nightly/",
+       html_playground_url = "https://play.rust-lang.org/",
+       test(attr(deny(warnings))))]
 
 #![deny(missing_docs)]
 #![feature(staged_api)]
@@ -228,14 +232,14 @@ impl Name {
         if nm.len() == 1 {
             Short(nm.char_at(0))
         } else {
-            Long(nm.to_string())
+            Long(nm.to_owned())
         }
     }
 
     fn to_string(&self) -> String {
         match *self {
             Short(ch) => ch.to_string(),
-            Long(ref s) => s.to_string()
+            Long(ref s) => s.to_owned()
         }
     }
 }
@@ -374,7 +378,7 @@ impl Matches {
         } else {
             match vals[0] {
                 Val(ref s) => Some((*s).clone()),
-                _ => Some(def.to_string())
+                _ => Some(def.to_owned())
             }
         }
     }
@@ -413,10 +417,10 @@ pub fn reqopt(short_name: &str, long_name: &str, desc: &str, hint: &str) -> OptG
     let len = short_name.len();
     assert!(len == 1 || len == 0);
     OptGroup {
-        short_name: short_name.to_string(),
-        long_name: long_name.to_string(),
-        hint: hint.to_string(),
-        desc: desc.to_string(),
+        short_name: short_name.to_owned(),
+        long_name: long_name.to_owned(),
+        hint: hint.to_owned(),
+        desc: desc.to_owned(),
         hasarg: Yes,
         occur: Req
     }
@@ -433,10 +437,10 @@ pub fn optopt(short_name: &str, long_name: &str, desc: &str, hint: &str) -> OptG
     let len = short_name.len();
     assert!(len == 1 || len == 0);
     OptGroup {
-        short_name: short_name.to_string(),
-        long_name: long_name.to_string(),
-        hint: hint.to_string(),
-        desc: desc.to_string(),
+        short_name: short_name.to_owned(),
+        long_name: long_name.to_owned(),
+        hint: hint.to_owned(),
+        desc: desc.to_owned(),
         hasarg: Yes,
         occur: Optional
     }
@@ -451,10 +455,10 @@ pub fn optflag(short_name: &str, long_name: &str, desc: &str) -> OptGroup {
     let len = short_name.len();
     assert!(len == 1 || len == 0);
     OptGroup {
-        short_name: short_name.to_string(),
-        long_name: long_name.to_string(),
-        hint: "".to_string(),
-        desc: desc.to_string(),
+        short_name: short_name.to_owned(),
+        long_name: long_name.to_owned(),
+        hint: "".to_owned(),
+        desc: desc.to_owned(),
         hasarg: No,
         occur: Optional
     }
@@ -470,10 +474,10 @@ pub fn optflagmulti(short_name: &str, long_name: &str, desc: &str) -> OptGroup {
     let len = short_name.len();
     assert!(len == 1 || len == 0);
     OptGroup {
-        short_name: short_name.to_string(),
-        long_name: long_name.to_string(),
-        hint: "".to_string(),
-        desc: desc.to_string(),
+        short_name: short_name.to_owned(),
+        long_name: long_name.to_owned(),
+        hint: "".to_owned(),
+        desc: desc.to_owned(),
         hasarg: No,
         occur: Multi
     }
@@ -490,10 +494,10 @@ pub fn optflagopt(short_name: &str, long_name: &str, desc: &str, hint: &str) -> 
     let len = short_name.len();
     assert!(len == 1 || len == 0);
     OptGroup {
-        short_name: short_name.to_string(),
-        long_name: long_name.to_string(),
-        hint: hint.to_string(),
-        desc: desc.to_string(),
+        short_name: short_name.to_owned(),
+        long_name: long_name.to_owned(),
+        hint: hint.to_owned(),
+        desc: desc.to_owned(),
         hasarg: Maybe,
         occur: Optional
     }
@@ -511,10 +515,10 @@ pub fn optmulti(short_name: &str, long_name: &str, desc: &str, hint: &str) -> Op
     let len = short_name.len();
     assert!(len == 1 || len == 0);
     OptGroup {
-        short_name: short_name.to_string(),
-        long_name: long_name.to_string(),
-        hint: hint.to_string(),
-        desc: desc.to_string(),
+        short_name: short_name.to_owned(),
+        long_name: long_name.to_owned(),
+        hint: hint.to_owned(),
+        desc: desc.to_owned(),
         hasarg: Yes,
         occur: Multi
     }
@@ -530,22 +534,12 @@ pub fn opt(short_name: &str,
     let len = short_name.len();
     assert!(len == 1 || len == 0);
     OptGroup {
-        short_name: short_name.to_string(),
-        long_name: long_name.to_string(),
-        hint: hint.to_string(),
-        desc: desc.to_string(),
+        short_name: short_name.to_owned(),
+        long_name: long_name.to_owned(),
+        hint: hint.to_owned(),
+        desc: desc.to_owned(),
         hasarg: hasarg,
         occur: occur
-    }
-}
-
-impl Fail {
-    /// Convert a `Fail` enum into an error string.
-    #[unstable(feature = "rustc_private")]
-    #[deprecated(since = "1.0.0",
-                 reason = "use `fmt::Display` (`{}` format specifier)")]
-    pub fn to_err_msg(self) -> String {
-        self.to_string()
     }
 }
 
@@ -583,7 +577,7 @@ pub fn getopts(args: &[String], optgrps: &[OptGroup]) -> Result {
     let opts: Vec<Opt> = optgrps.iter().map(|x| x.long_to_short()).collect();
     let n_opts = opts.len();
 
-    fn f(_x: usize) -> Vec<Optval> { return Vec::new(); }
+    fn f(_x: usize) -> Vec<Optval> { Vec::new() }
 
     let mut vals: Vec<_> = (0..n_opts).map(f).collect();
     let mut free: Vec<String> = Vec::new();
@@ -605,11 +599,11 @@ pub fn getopts(args: &[String], optgrps: &[OptGroup]) -> Result {
                 let tail = &cur[2..curlen];
                 let tail_eq: Vec<&str> = tail.split('=').collect();
                 if tail_eq.len() <= 1 {
-                    names = vec!(Long(tail.to_string()));
+                    names = vec!(Long(tail.to_owned()));
                 } else {
                     names =
-                        vec!(Long(tail_eq[0].to_string()));
-                    i_arg = Some(tail_eq[1].to_string());
+                        vec!(Long(tail_eq[0].to_owned()));
+                    i_arg = Some(tail_eq[1].to_owned());
                 }
             } else {
                 let mut j = 1;
@@ -639,7 +633,7 @@ pub fn getopts(args: &[String], optgrps: &[OptGroup]) -> Result {
 
                     let next = j + ch.len_utf8();
                     if arg_follows && next < curlen {
-                        i_arg = Some((&cur[next..curlen]).to_string());
+                        i_arg = Some((&cur[next..curlen]).to_owned());
                         break;
                     }
 
@@ -778,19 +772,19 @@ pub fn usage(brief: &str, opts: &[OptGroup]) -> String {
         // FIXME: #5516 should be graphemes not codepoints
         let mut desc_rows = Vec::new();
         each_split_within(&desc_normalized_whitespace[..], 54, |substr| {
-            desc_rows.push(substr.to_string());
+            desc_rows.push(substr.to_owned());
             true
         });
 
         // FIXME: #5516 should be graphemes not codepoints
         // wrapped description
-        row.push_str(&desc_rows.connect(&desc_sep[..]));
+        row.push_str(&desc_rows.join(&desc_sep[..]));
 
         row
     });
 
     format!("{}\n\nOptions:\n{}\n", brief,
-            rows.collect::<Vec<String>>().connect("\n"))
+            rows.collect::<Vec<String>>().join("\n"))
 }
 
 fn format_option(opt: &OptGroup) -> String {
@@ -836,7 +830,7 @@ pub fn short_usage(program_name: &str, opts: &[OptGroup]) -> String {
     line.push_str(&opts.iter()
                        .map(format_option)
                        .collect::<Vec<String>>()
-                       .connect(" ")[..]);
+                       .join(" ")[..]);
     line
 }
 
@@ -945,7 +939,7 @@ fn each_split_within<F>(ss: &str, lim: usize, mut it: F) -> bool where
         machine(&mut cont, (fake_i, ' '));
         fake_i += 1;
     }
-    return cont;
+    cont
 }
 
 #[test]
@@ -953,7 +947,7 @@ fn test_split_within() {
     fn t(s: &str, i: usize, u: &[String]) {
         let mut v = Vec::new();
         each_split_within(s, i, |s| { v.push(s.to_string()); true });
-        assert!(v.iter().zip(u.iter()).all(|(a,b)| a == b));
+        assert!(v.iter().zip(u).all(|(a,b)| a == b));
     }
     t("", 0, &[]);
     t("", 15, &[]);

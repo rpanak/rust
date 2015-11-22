@@ -16,16 +16,13 @@ pub use self::SearchResult::*;
 pub use self::ForceResult::*;
 pub use self::TraversalItem::*;
 
-use core::prelude::*;
-
 use core::cmp::Ordering::{Greater, Less, Equal};
-#[cfg(not(stage0))]
 use core::intrinsics::arith_offset;
 use core::iter::Zip;
 use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut, Index, IndexMut};
 use core::ptr::Unique;
-use core::{slice, mem, ptr, cmp, raw};
+use core::{slice, mem, ptr, cmp};
 use alloc::heap::{self, EMPTY};
 
 use borrow::Borrow;
@@ -164,12 +161,17 @@ fn test_offset_calculation() {
 }
 
 fn calculate_allocation_generic<K, V>(capacity: usize, is_leaf: bool) -> (usize, usize) {
-    let (keys_size, keys_align) = (capacity * mem::size_of::<K>(), mem::min_align_of::<K>());
-    let (vals_size, vals_align) = (capacity * mem::size_of::<V>(), mem::min_align_of::<V>());
+    let (keys_size, keys_align) = (capacity * mem::size_of::<K>(), mem::align_of::<K>());
+    let (vals_size, vals_align) = (capacity * mem::size_of::<V>(), mem::align_of::<V>());
     let (edges_size, edges_align) = if is_leaf {
-        (0, 1)
+        // allocate one edge to ensure that we don't pass size 0 to `heap::allocate`
+        if mem::size_of::<K>() == 0 && mem::size_of::<V>() == 0 {
+            (1, mem::align_of::<Node<K, V>>())
+        } else {
+            (0, 1)
+        }
     } else {
-        ((capacity + 1) * mem::size_of::<Node<K, V>>(), mem::min_align_of::<Node<K, V>>())
+        ((capacity + 1) * mem::size_of::<Node<K, V>>(), mem::align_of::<Node<K, V>>())
     };
 
     calculate_allocation(
@@ -182,11 +184,11 @@ fn calculate_allocation_generic<K, V>(capacity: usize, is_leaf: bool) -> (usize,
 fn calculate_offsets_generic<K, V>(capacity: usize, is_leaf: bool) -> (usize, usize) {
     let keys_size = capacity * mem::size_of::<K>();
     let vals_size = capacity * mem::size_of::<V>();
-    let vals_align = mem::min_align_of::<V>();
+    let vals_align = mem::align_of::<V>();
     let edges_align = if is_leaf {
         1
     } else {
-        mem::min_align_of::<Node<K, V>>()
+        mem::align_of::<Node<K, V>>()
     };
 
     calculate_offsets(
@@ -207,22 +209,6 @@ impl<T> RawItems<T> {
         RawItems::from_parts(slice.as_ptr(), slice.len())
     }
 
-    #[cfg(stage0)]
-    unsafe fn from_parts(ptr: *const T, len: usize) -> RawItems<T> {
-        if mem::size_of::<T>() == 0 {
-            RawItems {
-                head: ptr,
-                tail: (ptr as usize + len) as *const T,
-            }
-        } else {
-            RawItems {
-                head: ptr,
-                tail: ptr.offset(len as isize),
-            }
-        }
-    }
-
-    #[cfg(not(stage0))]
     unsafe fn from_parts(ptr: *const T, len: usize) -> RawItems<T> {
         if mem::size_of::<T>() == 0 {
             RawItems {
@@ -237,18 +223,6 @@ impl<T> RawItems<T> {
         }
     }
 
-    #[cfg(stage0)]
-    unsafe fn push(&mut self, val: T) {
-        ptr::write(self.tail as *mut T, val);
-
-        if mem::size_of::<T>() == 0 {
-            self.tail = (self.tail as usize + 1) as *const T;
-        } else {
-            self.tail = self.tail.offset(1);
-        }
-    }
-
-    #[cfg(not(stage0))]
     unsafe fn push(&mut self, val: T) {
         ptr::write(self.tail as *mut T, val);
 
@@ -263,26 +237,6 @@ impl<T> RawItems<T> {
 impl<T> Iterator for RawItems<T> {
     type Item = T;
 
-    #[cfg(stage0)]
-    fn next(&mut self) -> Option<T> {
-        if self.head == self.tail {
-            None
-        } else {
-            unsafe {
-                let ret = Some(ptr::read(self.head));
-
-                if mem::size_of::<T>() == 0 {
-                    self.head = (self.head as usize + 1) as *const T;
-                } else {
-                    self.head = self.head.offset(1);
-                }
-
-                ret
-            }
-        }
-    }
-
-    #[cfg(not(stage0))]
     fn next(&mut self) -> Option<T> {
         if self.head == self.tail {
             None
@@ -303,24 +257,6 @@ impl<T> Iterator for RawItems<T> {
 }
 
 impl<T> DoubleEndedIterator for RawItems<T> {
-    #[cfg(stage0)]
-    fn next_back(&mut self) -> Option<T> {
-        if self.head == self.tail {
-            None
-        } else {
-            unsafe {
-                if mem::size_of::<T>() == 0 {
-                    self.tail = (self.tail as usize - 1) as *const T;
-                } else {
-                    self.tail = self.tail.offset(-1);
-                }
-
-                Some(ptr::read(self.tail))
-            }
-        }
-    }
-
-    #[cfg(not(stage0))]
     fn next_back(&mut self) -> Option<T> {
         if self.head == self.tail {
             None
@@ -339,12 +275,14 @@ impl<T> DoubleEndedIterator for RawItems<T> {
 }
 
 impl<T> Drop for RawItems<T> {
+    #[unsafe_destructor_blind_to_params]
     fn drop(&mut self) {
-        for _ in self.by_ref() {}
+        for _ in self {}
     }
 }
 
 impl<K, V> Drop for Node<K, V> {
+    #[unsafe_destructor_blind_to_params]
     fn drop(&mut self) {
         if self.keys.is_null() ||
             (unsafe { self.keys.get() as *const K as usize == mem::POST_DROP_USIZE })
@@ -365,7 +303,7 @@ impl<K, V> Drop for Node<K, V> {
             self.destroy();
         }
 
-        self.keys = unsafe { Unique::new(0 as *mut K) };
+        self.keys = unsafe { Unique::new(ptr::null_mut()) };
     }
 }
 
@@ -423,7 +361,10 @@ impl<K, V> Node<K, V> {
 
     #[inline]
     pub fn as_slices_mut<'a>(&'a mut self) -> (&'a mut [K], &'a mut [V]) {
-        unsafe { mem::transmute(self.as_slices()) }
+        unsafe {(
+            slice::from_raw_parts_mut(*self.keys, self.len()),
+            slice::from_raw_parts_mut(*self.vals, self.len()),
+        )}
     }
 
     #[inline]
@@ -438,10 +379,7 @@ impl<K, V> Node<K, V> {
                     None => heap::EMPTY as *const Node<K,V>,
                     Some(ref p) => **p as *const Node<K,V>,
                 };
-                mem::transmute(raw::Slice {
-                    data: data,
-                    len: self.len() + 1
-                })
+                slice::from_raw_parts(data, self.len() + 1)
             }
         };
         NodeSlice {
@@ -456,7 +394,29 @@ impl<K, V> Node<K, V> {
 
     #[inline]
     pub fn as_slices_internal_mut<'b>(&'b mut self) -> MutNodeSlice<'b, K, V> {
-        unsafe { mem::transmute(self.as_slices_internal()) }
+        let len = self.len();
+        let is_leaf = self.is_leaf();
+        let keys = unsafe { slice::from_raw_parts_mut(*self.keys, len) };
+        let vals = unsafe { slice::from_raw_parts_mut(*self.vals, len) };
+        let edges: &mut [_] = if is_leaf {
+            &mut []
+        } else {
+            unsafe {
+                let data = match self.edges {
+                    None => heap::EMPTY as *mut Node<K,V>,
+                    Some(ref mut p) => **p as *mut Node<K,V>,
+                };
+                slice::from_raw_parts_mut(data, len + 1)
+            }
+        };
+        MutNodeSlice {
+            keys: keys,
+            vals: vals,
+            edges: edges,
+            head_is_edge: true,
+            tail_is_edge: true,
+            has_edges: !is_leaf,
+        }
     }
 
     #[inline]
@@ -491,7 +451,6 @@ impl<K, V> Node<K, V> {
 }
 
 // FIXME(gereeter) Write an efficient clone_from
-#[stable(feature = "rust1", since = "1.0.0")]
 impl<K: Clone, V: Clone> Clone for Node<K, V> {
     fn clone(&self) -> Node<K, V> {
         let mut ret = if self.is_leaf() {
@@ -858,7 +817,7 @@ impl<K, V, NodeRef> Handle<NodeRef, handle::Edge, handle::Internal> where
         }
     }
 
-    /// Handle an underflow in this node's child. We favour handling "to the left" because we know
+    /// Handle an underflow in this node's child. We favor handling "to the left" because we know
     /// we're empty, but our neighbour can be full. Handling to the left means when we choose to
     /// steal, we pop off the end of our neighbour (always fast) and "unshift" ourselves
     /// (always slow, but at least faster since we know we're half-empty).
@@ -1461,6 +1420,7 @@ impl<K, V> TraversalImpl for MoveTraversalImpl<K, V> {
 }
 
 impl<K, V> Drop for MoveTraversalImpl<K, V> {
+    #[unsafe_destructor_blind_to_params]
     fn drop(&mut self) {
         // We need to cleanup the stored values manually, as the RawItems destructor would run
         // after our deallocation.
@@ -1594,7 +1554,9 @@ macro_rules! node_slice_impl {
             }
 
             /// Returns a sub-slice with elements starting with `min_key`.
-            pub fn slice_from(self, min_key: &K) -> $NodeSlice<'a, K, V> {
+            pub fn slice_from<Q: ?Sized + Ord>(self, min_key: &Q) -> $NodeSlice<'a, K, V> where
+                K: Borrow<Q>,
+            {
                 //  _______________
                 // |_1_|_3_|_5_|_7_|
                 // |   |   |   |   |
@@ -1622,7 +1584,9 @@ macro_rules! node_slice_impl {
             }
 
             /// Returns a sub-slice with elements up to and including `max_key`.
-            pub fn slice_to(self, max_key: &K) -> $NodeSlice<'a, K, V> {
+            pub fn slice_to<Q: ?Sized + Ord>(self, max_key: &Q) -> $NodeSlice<'a, K, V> where
+                K: Borrow<Q>,
+            {
                 //  _______________
                 // |_1_|_3_|_5_|_7_|
                 // |   |   |   |   |

@@ -8,9 +8,10 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-//! Operations and constants for signed 64-bits integers (`i64` type)
+//! The 64-bit signed integer type.
+//!
+//! *[See also the `i64` primitive type](../primitive.i64.html).*
 
 #![stable(feature = "rust1", since = "1.0.0")]
-#![doc(primitive = "i64")]
 
 int_module! { i64, 64 }

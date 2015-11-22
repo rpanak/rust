@@ -8,73 +8,129 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-//! Operations and constants for 32-bits floats (`f32` type)
+//! The 32-bit floating point type.
+//!
+//! *[See also the `f32` primitive type](../primitive.f32.html).*
 
 #![stable(feature = "rust1", since = "1.0.0")]
 #![allow(missing_docs)]
-#![allow(unsigned_negation)]
-#![doc(primitive = "f32")]
-
-use prelude::v1::*;
 
 use core::num;
 use intrinsics;
 use libc::c_int;
 use num::{FpCategory, ParseFloatError};
 
+#[stable(feature = "rust1", since = "1.0.0")]
 pub use core::f32::{RADIX, MANTISSA_DIGITS, DIGITS, EPSILON};
+#[stable(feature = "rust1", since = "1.0.0")]
 pub use core::f32::{MIN_EXP, MAX_EXP, MIN_10_EXP};
+#[stable(feature = "rust1", since = "1.0.0")]
 pub use core::f32::{MAX_10_EXP, NAN, INFINITY, NEG_INFINITY};
+#[stable(feature = "rust1", since = "1.0.0")]
 pub use core::f32::{MIN, MIN_POSITIVE, MAX};
+#[stable(feature = "rust1", since = "1.0.0")]
 pub use core::f32::consts;
 
 #[allow(dead_code)]
 mod cmath {
     use libc::{c_float, c_int};
 
-    #[link_name = "m"]
     extern {
-        pub fn acosf(n: c_float) -> c_float;
-        pub fn asinf(n: c_float) -> c_float;
-        pub fn atanf(n: c_float) -> c_float;
-        pub fn atan2f(a: c_float, b: c_float) -> c_float;
         pub fn cbrtf(n: c_float) -> c_float;
-        pub fn coshf(n: c_float) -> c_float;
         pub fn erff(n: c_float) -> c_float;
         pub fn erfcf(n: c_float) -> c_float;
         pub fn expm1f(n: c_float) -> c_float;
         pub fn fdimf(a: c_float, b: c_float) -> c_float;
-        pub fn frexpf(n: c_float, value: &mut c_int) -> c_float;
         pub fn fmaxf(a: c_float, b: c_float) -> c_float;
         pub fn fminf(a: c_float, b: c_float) -> c_float;
         pub fn fmodf(a: c_float, b: c_float) -> c_float;
-        pub fn nextafterf(x: c_float, y: c_float) -> c_float;
-        pub fn hypotf(x: c_float, y: c_float) -> c_float;
-        pub fn ldexpf(x: c_float, n: c_int) -> c_float;
+        pub fn ilogbf(n: c_float) -> c_int;
         pub fn logbf(n: c_float) -> c_float;
         pub fn log1pf(n: c_float) -> c_float;
-        pub fn ilogbf(n: c_float) -> c_int;
         pub fn modff(n: c_float, iptr: &mut c_float) -> c_float;
+        pub fn nextafterf(x: c_float, y: c_float) -> c_float;
+        pub fn tgammaf(n: c_float) -> c_float;
+
+        #[cfg_attr(all(windows, target_env = "msvc"), link_name = "__lgammaf_r")]
+        pub fn lgammaf_r(n: c_float, sign: &mut c_int) -> c_float;
+        #[cfg_attr(all(windows, target_env = "msvc"), link_name = "_hypotf")]
+        pub fn hypotf(x: c_float, y: c_float) -> c_float;
+    }
+
+    // See the comments in `core::float::Float::floor` for why MSVC is special
+    // here.
+    #[cfg(not(target_env = "msvc"))]
+    extern {
+        pub fn acosf(n: c_float) -> c_float;
+        pub fn asinf(n: c_float) -> c_float;
+        pub fn atan2f(a: c_float, b: c_float) -> c_float;
+        pub fn atanf(n: c_float) -> c_float;
+        pub fn coshf(n: c_float) -> c_float;
+        pub fn frexpf(n: c_float, value: &mut c_int) -> c_float;
+        pub fn ldexpf(x: c_float, n: c_int) -> c_float;
         pub fn sinhf(n: c_float) -> c_float;
         pub fn tanf(n: c_float) -> c_float;
         pub fn tanhf(n: c_float) -> c_float;
-        pub fn tgammaf(n: c_float) -> c_float;
+    }
 
-        #[cfg(unix)]
-        pub fn lgammaf_r(n: c_float, sign: &mut c_int) -> c_float;
+    #[cfg(target_env = "msvc")]
+    pub use self::shims::*;
+    #[cfg(target_env = "msvc")]
+    mod shims {
+        use libc::{c_float, c_int};
 
-        #[cfg(windows)]
-        #[link_name="__lgammaf_r"]
-        pub fn lgammaf_r(n: c_float, sign: &mut c_int) -> c_float;
+        pub unsafe fn acosf(n: c_float) -> c_float {
+            f64::acos(n as f64) as c_float
+        }
+
+        pub unsafe fn asinf(n: c_float) -> c_float {
+            f64::asin(n as f64) as c_float
+        }
+
+        pub unsafe fn atan2f(n: c_float, b: c_float) -> c_float {
+            f64::atan2(n as f64, b as f64) as c_float
+        }
+
+        pub unsafe fn atanf(n: c_float) -> c_float {
+            f64::atan(n as f64) as c_float
+        }
+
+        pub unsafe fn coshf(n: c_float) -> c_float {
+            f64::cosh(n as f64) as c_float
+        }
+
+        pub unsafe fn frexpf(x: c_float, value: &mut c_int) -> c_float {
+            let (a, b) = f64::frexp(x as f64);
+            *value = b as c_int;
+            a as c_float
+        }
+
+        pub unsafe fn ldexpf(x: c_float, n: c_int) -> c_float {
+            f64::ldexp(x as f64, n as isize) as c_float
+        }
+
+        pub unsafe fn sinhf(n: c_float) -> c_float {
+            f64::sinh(n as f64) as c_float
+        }
+
+        pub unsafe fn tanf(n: c_float) -> c_float {
+            f64::tan(n as f64) as c_float
+        }
+
+        pub unsafe fn tanhf(n: c_float) -> c_float {
+            f64::tanh(n as f64) as c_float
+        }
     }
 }
 
 #[cfg(not(test))]
 #[lang = "f32"]
-#[stable(feature = "rust1", since = "1.0.0")]
 impl f32 {
     /// Parses a float as with a given radix
-    #[unstable(feature = "float_from_str_radix", reason = "recently moved API")]
+    #[unstable(feature = "float_from_str_radix", reason = "recently moved API",
+               issue = "27736")]
+    #[deprecated(since = "1.4.0",
+                 reason = "unclear how useful or correct this is")]
     pub fn from_str_radix(s: &str, radix: u32) -> Result<f32, ParseFloatError> {
         num::Float::from_str_radix(s, radix)
     }
@@ -183,7 +239,8 @@ impl f32 {
     /// The floating point encoding is documented in the [Reference][floating-point].
     ///
     /// ```
-    /// # #![feature(std_misc)]
+    /// #![feature(float_extras)]
+    ///
     /// use std::f32;
     ///
     /// let num = 2.0f32;
@@ -200,9 +257,12 @@ impl f32 {
     /// assert!(abs_difference <= f32::EPSILON);
     /// ```
     /// [floating-point]: ../../../../../reference.html#machine-types
-    #[unstable(feature = "std_misc", reason = "signature is undecided")]
+    #[unstable(feature = "float_extras", reason = "signature is undecided",
+               issue = "27752")]
     #[inline]
-    pub fn integer_decode(self) -> (u64, i16, i8) { num::Float::integer_decode(self) }
+    pub fn integer_decode(self) -> (u64, i16, i8) {
+        num::Float::integer_decode(self)
+    }
 
     /// Returns the largest integer less than or equal to a number.
     ///
@@ -215,7 +275,27 @@ impl f32 {
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     #[inline]
-    pub fn floor(self) -> f32 { num::Float::floor(self) }
+    pub fn floor(self) -> f32 {
+        return floorf(self);
+
+        // On MSVC LLVM will lower many math intrinsics to a call to the
+        // corresponding function. On MSVC, however, many of these functions
+        // aren't actually available as symbols to call, but rather they are all
+        // `static inline` functions in header files. This means that from a C
+        // perspective it's "compatible", but not so much from an ABI
+        // perspective (which we're worried about).
+        //
+        // The inline header functions always just cast to a f64 and do their
+        // operation, so we do that here as well, but only for MSVC targets.
+        //
+        // Note that there are many MSVC-specific float operations which
+        // redirect to this comment, so `floorf` is just one case of a missing
+        // function on MSVC, but there are many others elsewhere.
+        #[cfg(target_env = "msvc")]
+        fn floorf(f: f32) -> f32 { (f as f64).floor() as f32 }
+        #[cfg(not(target_env = "msvc"))]
+        fn floorf(f: f32) -> f32 { unsafe { intrinsics::floorf32(f) } }
+    }
 
     /// Returns the smallest integer greater than or equal to a number.
     ///
@@ -228,7 +308,15 @@ impl f32 {
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     #[inline]
-    pub fn ceil(self) -> f32 { num::Float::ceil(self) }
+    pub fn ceil(self) -> f32 {
+        return ceilf(self);
+
+        // see notes above in `floor`
+        #[cfg(target_env = "msvc")]
+        fn ceilf(f: f32) -> f32 { (f as f64).ceil() as f32 }
+        #[cfg(not(target_env = "msvc"))]
+        fn ceilf(f: f32) -> f32 { unsafe { intrinsics::ceilf32(f) } }
+    }
 
     /// Returns the nearest integer to a number. Round half-way cases away from
     /// `0.0`.
@@ -242,7 +330,9 @@ impl f32 {
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     #[inline]
-    pub fn round(self) -> f32 { num::Float::round(self) }
+    pub fn round(self) -> f32 {
+        unsafe { intrinsics::roundf32(self) }
+    }
 
     /// Returns the integer part of a number.
     ///
@@ -255,7 +345,9 @@ impl f32 {
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     #[inline]
-    pub fn trunc(self) -> f32 { num::Float::trunc(self) }
+    pub fn trunc(self) -> f32 {
+        unsafe { intrinsics::truncf32(self) }
+    }
 
     /// Returns the fractional part of a number.
     ///
@@ -272,7 +364,7 @@ impl f32 {
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     #[inline]
-    pub fn fract(self) -> f32 { num::Float::fract(self) }
+    pub fn fract(self) -> f32 { self - self.trunc() }
 
     /// Computes the absolute value of `self`. Returns `NAN` if the
     /// number is `NAN`.
@@ -371,7 +463,9 @@ impl f32 {
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     #[inline]
-    pub fn mul_add(self, a: f32, b: f32) -> f32 { num::Float::mul_add(self, a, b) }
+    pub fn mul_add(self, a: f32, b: f32) -> f32 {
+        unsafe { intrinsics::fmaf32(self, a, b) }
+    }
 
     /// Takes the reciprocal (inverse) of a number, `1/x`.
     ///
@@ -415,7 +509,15 @@ impl f32 {
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     #[inline]
-    pub fn powf(self, n: f32) -> f32 { num::Float::powf(self, n) }
+    pub fn powf(self, n: f32) -> f32 {
+        return powf(self, n);
+
+        // see notes above in `floor`
+        #[cfg(target_env = "msvc")]
+        fn powf(f: f32, n: f32) -> f32 { (f as f64).powf(n as f64) as f32 }
+        #[cfg(not(target_env = "msvc"))]
+        fn powf(f: f32, n: f32) -> f32 { unsafe { intrinsics::powf32(f, n) } }
+    }
 
     /// Takes the square root of a number.
     ///
@@ -434,7 +536,13 @@ impl f32 {
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     #[inline]
-    pub fn sqrt(self) -> f32 { num::Float::sqrt(self) }
+    pub fn sqrt(self) -> f32 {
+        if self < 0.0 {
+            NAN
+        } else {
+            unsafe { intrinsics::sqrtf32(self) }
+        }
+    }
 
     /// Returns `e^(self)`, (the exponential function).
     ///
@@ -452,7 +560,15 @@ impl f32 {
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     #[inline]
-    pub fn exp(self) -> f32 { num::Float::exp(self) }
+    pub fn exp(self) -> f32 {
+        return expf(self);
+
+        // see notes above in `floor`
+        #[cfg(target_env = "msvc")]
+        fn expf(f: f32) -> f32 { (f as f64).exp() as f32 }
+        #[cfg(not(target_env = "msvc"))]
+        fn expf(f: f32) -> f32 { unsafe { intrinsics::expf32(f) } }
+    }
 
     /// Returns `2^(self)`.
     ///
@@ -468,7 +584,9 @@ impl f32 {
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     #[inline]
-    pub fn exp2(self) -> f32 { num::Float::exp2(self) }
+    pub fn exp2(self) -> f32 {
+        unsafe { intrinsics::exp2f32(self) }
+    }
 
     /// Returns the natural logarithm of the number.
     ///
@@ -486,7 +604,15 @@ impl f32 {
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     #[inline]
-    pub fn ln(self) -> f32 { num::Float::ln(self) }
+    pub fn ln(self) -> f32 {
+        return logf(self);
+
+        // see notes above in `floor`
+        #[cfg(target_env = "msvc")]
+        fn logf(f: f32) -> f32 { (f as f64).ln() as f32 }
+        #[cfg(not(target_env = "msvc"))]
+        fn logf(f: f32) -> f32 { unsafe { intrinsics::logf32(f) } }
+    }
 
     /// Returns the logarithm of the number with respect to an arbitrary base.
     ///
@@ -507,7 +633,7 @@ impl f32 {
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     #[inline]
-    pub fn log(self, base: f32) -> f32 { num::Float::log(self, base) }
+    pub fn log(self, base: f32) -> f32 { self.ln() / base.ln() }
 
     /// Returns the base 2 logarithm of the number.
     ///
@@ -523,7 +649,9 @@ impl f32 {
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     #[inline]
-    pub fn log2(self) -> f32 { num::Float::log2(self) }
+    pub fn log2(self) -> f32 {
+        unsafe { intrinsics::log2f32(self) }
+    }
 
     /// Returns the base 10 logarithm of the number.
     ///
@@ -539,12 +667,21 @@ impl f32 {
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     #[inline]
-    pub fn log10(self) -> f32 { num::Float::log10(self) }
+    pub fn log10(self) -> f32 {
+        return log10f(self);
+
+        // see notes above in `floor`
+        #[cfg(target_env = "msvc")]
+        fn log10f(f: f32) -> f32 { (f as f64).log10() as f32 }
+        #[cfg(not(target_env = "msvc"))]
+        fn log10f(f: f32) -> f32 { unsafe { intrinsics::log10f32(f) } }
+    }
 
     /// Converts radians to degrees.
     ///
     /// ```
-    /// # #![feature(std_misc)]
+    /// #![feature(float_extras)]
+    ///
     /// use std::f32::{self, consts};
     ///
     /// let angle = consts::PI;
@@ -553,14 +690,16 @@ impl f32 {
     ///
     /// assert!(abs_difference <= f32::EPSILON);
     /// ```
-    #[unstable(feature = "std_misc", reason = "desirability is unclear")]
+    #[unstable(feature = "float_extras", reason = "desirability is unclear",
+               issue = "27752")]
     #[inline]
     pub fn to_degrees(self) -> f32 { num::Float::to_degrees(self) }
 
     /// Converts degrees to radians.
     ///
     /// ```
-    /// # #![feature(std_misc)]
+    /// #![feature(float_extras)]
+    ///
     /// use std::f32::{self, consts};
     ///
     /// let angle = 180.0f32;
@@ -569,22 +708,25 @@ impl f32 {
     ///
     /// assert!(abs_difference <= f32::EPSILON);
     /// ```
-    #[unstable(feature = "std_misc", reason = "desirability is unclear")]
+    #[unstable(feature = "float_extras", reason = "desirability is unclear",
+               issue = "27752")]
     #[inline]
     pub fn to_radians(self) -> f32 { num::Float::to_radians(self) }
 
     /// Constructs a floating point number of `x*2^exp`.
     ///
     /// ```
-    /// # #![feature(std_misc)]
+    /// #![feature(float_extras)]
+    ///
     /// use std::f32;
     /// // 3*2^2 - 12 == 0
     /// let abs_difference = (f32::ldexp(3.0, 2) - 12.0).abs();
     ///
     /// assert!(abs_difference <= f32::EPSILON);
     /// ```
-    #[unstable(feature = "std_misc",
-               reason = "pending integer conventions")]
+    #[unstable(feature = "float_extras",
+               reason = "pending integer conventions",
+               issue = "27752")]
     #[inline]
     pub fn ldexp(x: f32, exp: isize) -> f32 {
         unsafe { cmath::ldexpf(x, exp as c_int) }
@@ -597,7 +739,8 @@ impl f32 {
     ///  * `0.5 <= abs(x) < 1.0`
     ///
     /// ```
-    /// # #![feature(std_misc)]
+    /// #![feature(float_extras)]
+    ///
     /// use std::f32;
     ///
     /// let x = 4.0f32;
@@ -610,8 +753,9 @@ impl f32 {
     /// assert!(abs_difference_0 <= f32::EPSILON);
     /// assert!(abs_difference_1 <= f32::EPSILON);
     /// ```
-    #[unstable(feature = "std_misc",
-               reason = "pending integer conventions")]
+    #[unstable(feature = "float_extras",
+               reason = "pending integer conventions",
+               issue = "27752")]
     #[inline]
     pub fn frexp(self) -> (f32, isize) {
         unsafe {
@@ -625,7 +769,8 @@ impl f32 {
     /// `other`.
     ///
     /// ```
-    /// # #![feature(std_misc)]
+    /// #![feature(float_extras)]
+    ///
     /// use std::f32;
     ///
     /// let x = 1.0f32;
@@ -634,8 +779,9 @@ impl f32 {
     ///
     /// assert!(abs_diff <= f32::EPSILON);
     /// ```
-    #[unstable(feature = "std_misc",
-               reason = "unsure about its place in the world")]
+    #[unstable(feature = "float_extras",
+               reason = "unsure about its place in the world",
+               issue = "27752")]
     #[inline]
     pub fn next_after(self, other: f32) -> f32 {
         unsafe { cmath::nextafterf(self, other) }
@@ -649,6 +795,8 @@ impl f32 {
     ///
     /// assert_eq!(x.max(y), y);
     /// ```
+    ///
+    /// If one of the arguments is NaN, then the other argument is returned.
     #[stable(feature = "rust1", since = "1.0.0")]
     #[inline]
     pub fn max(self, other: f32) -> f32 {
@@ -663,6 +811,8 @@ impl f32 {
     ///
     /// assert_eq!(x.min(y), x);
     /// ```
+    ///
+    /// If one of the arguments is NaN, then the other argument is returned.
     #[stable(feature = "rust1", since = "1.0.0")]
     #[inline]
     pub fn min(self, other: f32) -> f32 {
@@ -744,7 +894,13 @@ impl f32 {
     #[stable(feature = "rust1", since = "1.0.0")]
     #[inline]
     pub fn sin(self) -> f32 {
-        unsafe { intrinsics::sinf32(self) }
+        return sinf(self);
+
+        // see notes in `core::f32::Float::floor`
+        #[cfg(target_env = "msvc")]
+        fn sinf(f: f32) -> f32 { (f as f64).sin() as f32 }
+        #[cfg(not(target_env = "msvc"))]
+        fn sinf(f: f32) -> f32 { unsafe { intrinsics::sinf32(f) } }
     }
 
     /// Computes the cosine of a number (in radians).
@@ -761,7 +917,13 @@ impl f32 {
     #[stable(feature = "rust1", since = "1.0.0")]
     #[inline]
     pub fn cos(self) -> f32 {
-        unsafe { intrinsics::cosf32(self) }
+        return cosf(self);
+
+        // see notes in `core::f32::Float::floor`
+        #[cfg(target_env = "msvc")]
+        fn cosf(f: f32) -> f32 { (f as f64).cos() as f32 }
+        #[cfg(not(target_env = "msvc"))]
+        fn cosf(f: f32) -> f32 { unsafe { intrinsics::cosf32(f) } }
     }
 
     /// Computes the tangent of a number (in radians).
@@ -1677,7 +1839,6 @@ mod tests {
         use super::consts;
 
         let pi: f32 = consts::PI;
-        let two_pi: f32 = consts::PI_2;
         let frac_pi_2: f32 = consts::FRAC_PI_2;
         let frac_pi_3: f32 = consts::FRAC_PI_3;
         let frac_pi_4: f32 = consts::FRAC_PI_4;
@@ -1694,7 +1855,6 @@ mod tests {
         let ln_2: f32 = consts::LN_2;
         let ln_10: f32 = consts::LN_10;
 
-        assert_approx_eq!(two_pi, 2f32 * pi);
         assert_approx_eq!(frac_pi_2, pi / 2f32);
         assert_approx_eq!(frac_pi_3, pi / 3f32);
         assert_approx_eq!(frac_pi_4, pi / 4f32);

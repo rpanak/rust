@@ -8,8 +8,6 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use prelude::v1::*;
-
 use io;
 use libc;
 use sys::fd::FileDesc;
@@ -19,35 +17,35 @@ pub struct Stdout(());
 pub struct Stderr(());
 
 impl Stdin {
-    pub fn new() -> Stdin { Stdin(()) }
+    pub fn new() -> io::Result<Stdin> { Ok(Stdin(())) }
 
     pub fn read(&self, data: &mut [u8]) -> io::Result<usize> {
         let fd = FileDesc::new(libc::STDIN_FILENO);
         let ret = fd.read(data);
         fd.into_raw();
-        return ret;
+        ret
     }
 }
 
 impl Stdout {
-    pub fn new() -> Stdout { Stdout(()) }
+    pub fn new() -> io::Result<Stdout> { Ok(Stdout(())) }
 
     pub fn write(&self, data: &[u8]) -> io::Result<usize> {
         let fd = FileDesc::new(libc::STDOUT_FILENO);
         let ret = fd.write(data);
         fd.into_raw();
-        return ret;
+        ret
     }
 }
 
 impl Stderr {
-    pub fn new() -> Stderr { Stderr(()) }
+    pub fn new() -> io::Result<Stderr> { Ok(Stderr(())) }
 
     pub fn write(&self, data: &[u8]) -> io::Result<usize> {
         let fd = FileDesc::new(libc::STDERR_FILENO);
         let ret = fd.write(data);
         fd.into_raw();
-        return ret;
+        ret
     }
 }
 

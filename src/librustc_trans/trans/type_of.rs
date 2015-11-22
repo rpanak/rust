@@ -10,14 +10,14 @@
 
 #![allow(non_camel_case_types)]
 
+use middle::def_id::DefId;
+use middle::infer;
 use middle::subst;
 use trans::adt;
 use trans::common::*;
 use trans::foreign;
 use trans::machine;
 use middle::ty::{self, RegionEscape, Ty};
-use util::ppaux;
-use util::ppaux::Repr;
 
 use trans::type_::Type;
 
@@ -38,12 +38,12 @@ fn ensure_array_fits_in_address_space<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>,
 
 pub fn arg_is_indirect<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>,
                                  arg_ty: Ty<'tcx>) -> bool {
-    !type_is_immediate(ccx, arg_ty)
+    !type_is_immediate(ccx, arg_ty) && !type_is_fat_ptr(ccx.tcx(), arg_ty)
 }
 
 pub fn return_uses_outptr<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>,
                                     ty: Ty<'tcx>) -> bool {
-    !type_is_immediate(ccx, ty)
+    arg_is_indirect(ccx, ty)
 }
 
 pub fn type_of_explicit_arg<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>,
@@ -56,17 +56,11 @@ pub fn type_of_explicit_arg<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>,
     }
 }
 
-/// Yields the types of the "real" arguments for this function. For most
-/// functions, these are simply the types of the arguments. For functions with
-/// the `RustCall` ABI, however, this untuples the arguments of the function.
-pub fn untuple_arguments_if_necessary<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>,
-                                                inputs: &[Ty<'tcx>],
-                                                abi: abi::Abi)
-                                                -> Vec<Ty<'tcx>> {
-    if abi != abi::RustCall {
-        return inputs.iter().cloned().collect()
-    }
-
+/// Yields the types of the "real" arguments for a function using the `RustCall`
+/// ABI by untupling the arguments of the function.
+pub fn untuple_arguments<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>,
+                                   inputs: &[Ty<'tcx>])
+                                   -> Vec<Ty<'tcx>> {
     if inputs.is_empty() {
         return Vec::new()
     }
@@ -79,8 +73,8 @@ pub fn untuple_arguments_if_necessary<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>,
     }
 
     match inputs[inputs.len() - 1].sty {
-        ty::ty_tup(ref tupled_arguments) => {
-            debug!("untuple_arguments_if_necessary(): untupling arguments");
+        ty::TyTuple(ref tupled_arguments) => {
+            debug!("untuple_arguments(): untupling arguments");
             for &tupled_argument in tupled_arguments {
                 result.push(tupled_argument);
             }
@@ -96,21 +90,26 @@ pub fn untuple_arguments_if_necessary<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>,
 
 pub fn type_of_rust_fn<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
                                  llenvironment_type: Option<Type>,
-                                 sig: &ty::Binder<ty::FnSig<'tcx>>,
+                                 sig: &ty::FnSig<'tcx>,
                                  abi: abi::Abi)
                                  -> Type
 {
-    debug!("type_of_rust_fn(sig={},abi={:?})",
-           sig.repr(cx.tcx()),
+    debug!("type_of_rust_fn(sig={:?},abi={:?})",
+           sig,
            abi);
 
-    let sig = ty::erase_late_bound_regions(cx.tcx(), sig);
     assert!(!sig.variadic); // rust fns are never variadic
 
     let mut atys: Vec<Type> = Vec::new();
 
     // First, munge the inputs, if this has the `rust-call` ABI.
-    let inputs = untuple_arguments_if_necessary(cx, &sig.inputs, abi);
+    let inputs_temp;
+    let inputs = if abi == abi::RustCall {
+        inputs_temp = untuple_arguments(cx, &sig.inputs);
+        &inputs_temp
+    } else {
+        &sig.inputs
+    };
 
     // Arg 0: Output pointer.
     // (if the output type is non-immediate)
@@ -138,8 +137,15 @@ pub fn type_of_rust_fn<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
     }
 
     // ... then explicit args.
-    let input_tys = inputs.iter().map(|&arg_ty| type_of_explicit_arg(cx, arg_ty));
-    atys.extend(input_tys);
+    for input in inputs {
+        let arg_ty = type_of_explicit_arg(cx, input);
+
+        if type_is_fat_ptr(cx.tcx(), input) {
+            atys.extend(arg_ty.field_types());
+        } else {
+            atys.push(arg_ty);
+        }
+    }
 
     Type::func(&atys[..], &lloutputtype)
 }
@@ -147,11 +153,13 @@ pub fn type_of_rust_fn<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
 // Given a function type and a count of ty params, construct an llvm type
 pub fn type_of_fn_from_ty<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>, fty: Ty<'tcx>) -> Type {
     match fty.sty {
-        ty::ty_bare_fn(_, ref f) => {
+        ty::TyBareFn(_, ref f) => {
             // FIXME(#19925) once fn item types are
             // zero-sized, we'll need to do something here
             if f.abi == abi::Rust || f.abi == abi::RustCall {
-                type_of_rust_fn(cx, None, &f.sig, f.abi)
+                let sig = cx.tcx().erase_late_bound_regions(&f.sig);
+                let sig = infer::normalize_associated_type(cx.tcx(), &sig);
+                type_of_rust_fn(cx, None, &sig, f.abi)
             } else {
                 foreign::lltype_for_foreign_fn(cx, fty)
             }
@@ -179,18 +187,23 @@ pub fn sizing_type_of<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>, t: Ty<'tcx>) -> Typ
         None => ()
     }
 
+    debug!("sizing_type_of {:?}", t);
+    let _recursion_lock = cx.enter_type_of(t);
+
     let llsizingty = match t.sty {
         _ if !type_is_sized(cx.tcx(), t) => {
             Type::struct_(cx, &[Type::i8p(cx), Type::i8p(cx)], false)
         }
 
-        ty::ty_bool => Type::bool(cx),
-        ty::ty_char => Type::char(cx),
-        ty::ty_int(t) => Type::int_from_ty(cx, t),
-        ty::ty_uint(t) => Type::uint_from_ty(cx, t),
-        ty::ty_float(t) => Type::float_from_ty(cx, t),
+        ty::TyBool => Type::bool(cx),
+        ty::TyChar => Type::char(cx),
+        ty::TyInt(t) => Type::int_from_ty(cx, t),
+        ty::TyUint(t) => Type::uint_from_ty(cx, t),
+        ty::TyFloat(t) => Type::float_from_ty(cx, t),
 
-        ty::ty_uniq(ty) | ty::ty_rptr(_, ty::mt{ty, ..}) | ty::ty_ptr(ty::mt{ty, ..}) => {
+        ty::TyBox(ty) |
+        ty::TyRef(_, ty::TypeAndMut{ty, ..}) |
+        ty::TyRawPtr(ty::TypeAndMut{ty, ..}) => {
             if type_is_sized(cx.tcx(), ty) {
                 Type::i8p(cx)
             } else {
@@ -198,28 +211,34 @@ pub fn sizing_type_of<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>, t: Ty<'tcx>) -> Typ
             }
         }
 
-        ty::ty_bare_fn(..) => Type::i8p(cx),
+        ty::TyBareFn(..) => Type::i8p(cx),
 
-        ty::ty_vec(ty, Some(size)) => {
+        ty::TyArray(ty, size) => {
             let llty = sizing_type_of(cx, ty);
             let size = size as u64;
             ensure_array_fits_in_address_space(cx, llty, size, t);
             Type::array(&llty, size)
         }
 
-        ty::ty_tup(ref tys) if tys.is_empty() => {
+        ty::TyTuple(ref tys) if tys.is_empty() => {
             Type::nil(cx)
         }
 
-        ty::ty_tup(..) | ty::ty_enum(..) | ty::ty_closure(..) => {
+        ty::TyTuple(..) | ty::TyEnum(..) | ty::TyClosure(..) => {
             let repr = adt::represent_type(cx, t);
             adt::sizing_type_of(cx, &*repr, false)
         }
 
-        ty::ty_struct(..) => {
-            if ty::type_is_simd(cx.tcx(), t) {
-                let llet = type_of(cx, ty::simd_type(cx.tcx(), t));
-                let n = ty::simd_size(cx.tcx(), t) as u64;
+        ty::TyStruct(..) => {
+            if t.is_simd() {
+                let e = t.simd_type(cx.tcx());
+                if !e.is_machine() {
+                    cx.sess().fatal(&format!("monomorphising SIMD type `{}` with \
+                                              a non-machine element type `{}`",
+                                             t, e))
+                }
+                let llet = type_of(cx, e);
+                let n = t.simd_size(cx.tcx()) as u64;
                 ensure_array_fits_in_address_space(cx, llet, n, t);
                 Type::vector(&llet, n)
             } else {
@@ -228,19 +247,23 @@ pub fn sizing_type_of<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>, t: Ty<'tcx>) -> Typ
             }
         }
 
-        ty::ty_projection(..) | ty::ty_infer(..) | ty::ty_param(..) | ty::ty_err(..) => {
-            cx.sess().bug(&format!("fictitious type {} in sizing_type_of()",
-                                  ppaux::ty_to_string(cx.tcx(), t)))
+        ty::TyProjection(..) | ty::TyInfer(..) | ty::TyParam(..) | ty::TyError(..) => {
+            cx.sess().bug(&format!("fictitious type {:?} in sizing_type_of()",
+                                   t))
         }
-        ty::ty_vec(_, None) | ty::ty_trait(..) | ty::ty_str => unreachable!()
+        ty::TySlice(_) | ty::TyTrait(..) | ty::TyStr => unreachable!()
     };
+
+    debug!("--> mapped t={:?} to llsizingty={}",
+            t,
+            cx.tn().type_to_string(llsizingty));
 
     cx.llsizingtypes().borrow_mut().insert(t, llsizingty);
     llsizingty
 }
 
 pub fn foreign_arg_type_of<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>, t: Ty<'tcx>) -> Type {
-    if ty::type_is_bool(t) {
+    if t.is_bool() {
         Type::i1(cx)
     } else {
         type_of(cx, t)
@@ -248,7 +271,7 @@ pub fn foreign_arg_type_of<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>, t: Ty<'tcx>) -
 }
 
 pub fn arg_type_of<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>, t: Ty<'tcx>) -> Type {
-    if ty::type_is_bool(t) {
+    if t.is_bool() {
         Type::i1(cx)
     } else if type_is_immediate(cx, t) && type_of(cx, t).is_aggregate() {
         // We want to pass small aggregates as immediate values, but using an aggregate LLVM type
@@ -273,7 +296,7 @@ pub fn arg_type_of<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>, t: Ty<'tcx>) -> Type {
 /// For the raw type without far pointer indirection, see `in_memory_type_of`.
 pub fn type_of<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>, ty: Ty<'tcx>) -> Type {
     let ty = if !type_is_sized(cx.tcx(), ty) {
-        ty::mk_imm_ptr(cx.tcx(), ty)
+        cx.tcx().mk_imm_ptr(ty)
     } else {
         ty
     };
@@ -299,7 +322,7 @@ pub fn in_memory_type_of<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>, t: Ty<'tcx>) -> 
         None => ()
     }
 
-    debug!("type_of {} {:?}", t.repr(cx.tcx()), t.sty);
+    debug!("type_of {:?}", t);
 
     assert!(!t.has_escaping_regions());
 
@@ -308,14 +331,14 @@ pub fn in_memory_type_of<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>, t: Ty<'tcx>) -> 
     // Rust types are defined as the same LLVM types.  If we don't do
     // this then, e.g. `Option<{myfield: bool}>` would be a different
     // type than `Option<myrec>`.
-    let t_norm = erase_regions(cx.tcx(), &t);
+    let t_norm = cx.tcx().erase_regions(&t);
 
     if t != t_norm {
         let llty = in_memory_type_of(cx, t_norm);
-        debug!("--> normalized {} {:?} to {} {:?} llty={}",
-                t.repr(cx.tcx()),
+        debug!("--> normalized {:?} {:?} to {:?} {:?} llty={}",
                 t,
-                t_norm.repr(cx.tcx()),
+                t,
+                t_norm,
                 t_norm,
                 cx.tn().type_to_string(llty));
         cx.lltypes().borrow_mut().insert(t, llty);
@@ -323,49 +346,51 @@ pub fn in_memory_type_of<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>, t: Ty<'tcx>) -> 
     }
 
     let mut llty = match t.sty {
-      ty::ty_bool => Type::bool(cx),
-      ty::ty_char => Type::char(cx),
-      ty::ty_int(t) => Type::int_from_ty(cx, t),
-      ty::ty_uint(t) => Type::uint_from_ty(cx, t),
-      ty::ty_float(t) => Type::float_from_ty(cx, t),
-      ty::ty_enum(did, ref substs) => {
+      ty::TyBool => Type::bool(cx),
+      ty::TyChar => Type::char(cx),
+      ty::TyInt(t) => Type::int_from_ty(cx, t),
+      ty::TyUint(t) => Type::uint_from_ty(cx, t),
+      ty::TyFloat(t) => Type::float_from_ty(cx, t),
+      ty::TyEnum(def, ref substs) => {
           // Only create the named struct, but don't fill it in. We
           // fill it in *after* placing it into the type cache. This
           // avoids creating more than one copy of the enum when one
           // of the enum's variants refers to the enum itself.
           let repr = adt::represent_type(cx, t);
           let tps = substs.types.get_slice(subst::TypeSpace);
-          let name = llvm_type_name(cx, did, tps);
+          let name = llvm_type_name(cx, def.did, tps);
           adt::incomplete_type_of(cx, &*repr, &name[..])
       }
-      ty::ty_closure(..) => {
+      ty::TyClosure(..) => {
           // Only create the named struct, but don't fill it in. We
           // fill it in *after* placing it into the type cache.
           let repr = adt::represent_type(cx, t);
           // Unboxed closures can have substitutions in all spaces
           // inherited from their environment, so we use entire
-          // contents of the VecPerParamSpace to to construct the llvm
+          // contents of the VecPerParamSpace to construct the llvm
           // name
           adt::incomplete_type_of(cx, &*repr, "closure")
       }
 
-      ty::ty_uniq(ty) | ty::ty_rptr(_, ty::mt{ty, ..}) | ty::ty_ptr(ty::mt{ty, ..}) => {
+      ty::TyBox(ty) |
+      ty::TyRef(_, ty::TypeAndMut{ty, ..}) |
+      ty::TyRawPtr(ty::TypeAndMut{ty, ..}) => {
           if !type_is_sized(cx.tcx(), ty) {
-              if let ty::ty_str = ty.sty {
+              if let ty::TyStr = ty.sty {
                   // This means we get a nicer name in the output (str is always
                   // unsized).
                   cx.tn().find_type("str_slice").unwrap()
               } else {
                   let ptr_ty = in_memory_type_of(cx, ty).ptr_to();
-                  let unsized_part = ty::struct_tail(cx.tcx(), ty);
+                  let unsized_part = cx.tcx().struct_tail(ty);
                   let info_ty = match unsized_part.sty {
-                      ty::ty_str | ty::ty_vec(..) => {
+                      ty::TyStr | ty::TyArray(..) | ty::TySlice(_) => {
                           Type::uint_from_ty(cx, ast::TyUs)
                       }
-                      ty::ty_trait(_) => Type::vtable_ptr(cx),
+                      ty::TyTrait(_) => Type::vtable_ptr(cx),
                       _ => panic!("Unexpected type returned from \
-                                   struct_tail: {} for ty={}",
-                                  unsized_part.repr(cx.tcx()), ty.repr(cx.tcx()))
+                                   struct_tail: {:?} for ty={:?}",
+                                  unsized_part, ty)
                   };
                   Type::struct_(cx, &[ptr_ty, info_ty], false)
               }
@@ -374,10 +399,14 @@ pub fn in_memory_type_of<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>, t: Ty<'tcx>) -> 
           }
       }
 
-      ty::ty_vec(ty, Some(size)) => {
+      ty::TyArray(ty, size) => {
           let size = size as u64;
+          // we must use `sizing_type_of` here as the type may
+          // not be fully initialized.
+          let szty = sizing_type_of(cx, ty);
+          ensure_array_fits_in_address_space(cx, szty, size, t);
+
           let llty = in_memory_type_of(cx, ty);
-          ensure_array_fits_in_address_space(cx, llty, size, t);
           Type::array(&llty, size)
       }
 
@@ -385,21 +414,27 @@ pub fn in_memory_type_of<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>, t: Ty<'tcx>) -> 
       // traits have the type of u8. This is so that the data pointer inside
       // fat pointers is of the right type (e.g. for array accesses), even
       // when taking the address of an unsized field in a struct.
-      ty::ty_vec(ty, None) => in_memory_type_of(cx, ty),
-      ty::ty_str | ty::ty_trait(..) => Type::i8(cx),
+      ty::TySlice(ty) => in_memory_type_of(cx, ty),
+      ty::TyStr | ty::TyTrait(..) => Type::i8(cx),
 
-      ty::ty_bare_fn(..) => {
+      ty::TyBareFn(..) => {
           type_of_fn_from_ty(cx, t).ptr_to()
       }
-      ty::ty_tup(ref tys) if tys.is_empty() => Type::nil(cx),
-      ty::ty_tup(..) => {
+      ty::TyTuple(ref tys) if tys.is_empty() => Type::nil(cx),
+      ty::TyTuple(..) => {
           let repr = adt::represent_type(cx, t);
           adt::type_of(cx, &*repr)
       }
-      ty::ty_struct(did, ref substs) => {
-          if ty::type_is_simd(cx.tcx(), t) {
-              let llet = in_memory_type_of(cx, ty::simd_type(cx.tcx(), t));
-              let n = ty::simd_size(cx.tcx(), t) as u64;
+      ty::TyStruct(def, ref substs) => {
+          if t.is_simd() {
+              let e = t.simd_type(cx.tcx());
+              if !e.is_machine() {
+                  cx.sess().fatal(&format!("monomorphising SIMD type `{}` with \
+                                            a non-machine element type `{}`",
+                                           t, e))
+              }
+              let llet = in_memory_type_of(cx, e);
+              let n = t.simd_size(cx.tcx()) as u64;
               ensure_array_fits_in_address_space(cx, llet, n, t);
               Type::vector(&llet, n)
           } else {
@@ -408,19 +443,18 @@ pub fn in_memory_type_of<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>, t: Ty<'tcx>) -> 
               // infinite recursion with recursive struct types.
               let repr = adt::represent_type(cx, t);
               let tps = substs.types.get_slice(subst::TypeSpace);
-              let name = llvm_type_name(cx, did, tps);
+              let name = llvm_type_name(cx, def.did, tps);
               adt::incomplete_type_of(cx, &*repr, &name[..])
           }
       }
 
-      ty::ty_infer(..) => cx.sess().bug("type_of with ty_infer"),
-      ty::ty_projection(..) => cx.sess().bug("type_of with ty_projection"),
-      ty::ty_param(..) => cx.sess().bug("type_of with ty_param"),
-      ty::ty_err(..) => cx.sess().bug("type_of with ty_err"),
+      ty::TyInfer(..) => cx.sess().bug("type_of with TyInfer"),
+      ty::TyProjection(..) => cx.sess().bug("type_of with TyProjection"),
+      ty::TyParam(..) => cx.sess().bug("type_of with ty_param"),
+      ty::TyError(..) => cx.sess().bug("type_of with TyError"),
     };
 
-    debug!("--> mapped t={} {:?} to llty={}",
-            t.repr(cx.tcx()),
+    debug!("--> mapped t={:?} to llty={}",
             t,
             cx.tn().type_to_string(llty));
 
@@ -428,8 +462,8 @@ pub fn in_memory_type_of<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>, t: Ty<'tcx>) -> 
 
     // If this was an enum or struct, fill in the type now.
     match t.sty {
-        ty::ty_enum(..) | ty::ty_struct(..) | ty::ty_closure(..)
-                if !ty::type_is_simd(cx.tcx(), t) => {
+        ty::TyEnum(..) | ty::TyStruct(..) | ty::TyClosure(..)
+                if !t.is_simd() => {
             let repr = adt::represent_type(cx, t);
             adt::finish_type_of(cx, &*repr, &mut llty);
         }
@@ -446,15 +480,15 @@ pub fn align_of<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>, t: Ty<'tcx>)
 }
 
 fn llvm_type_name<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
-                            did: ast::DefId,
+                            did: DefId,
                             tps: &[Ty<'tcx>])
                             -> String {
-    let base = ty::item_path_str(cx.tcx(), did);
-    let strings: Vec<String> = tps.iter().map(|t| t.repr(cx.tcx())).collect();
+    let base = cx.tcx().item_path_str(did);
+    let strings: Vec<String> = tps.iter().map(|t| t.to_string()).collect();
     let tstr = if strings.is_empty() {
         base
     } else {
-        format!("{}<{}>", base, strings.connect(", "))
+        format!("{}<{}>", base, strings.join(", "))
     };
 
     if did.krate == 0 {
@@ -462,9 +496,4 @@ fn llvm_type_name<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
     } else {
         format!("{}.{}", did.krate, tstr)
     }
-}
-
-pub fn type_of_dtor<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>, self_ty: Ty<'tcx>) -> Type {
-    let self_ty = type_of(ccx, self_ty).ptr_to();
-    Type::func(&[self_ty], &Type::void(ccx))
 }

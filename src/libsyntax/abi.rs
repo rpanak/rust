@@ -25,7 +25,9 @@ pub enum Os {
     OsiOS,
     OsDragonfly,
     OsBitrig,
+    OsNetbsd,
     OsOpenbsd,
+    OsNaCl,
 }
 
 #[derive(PartialEq, Eq, Hash, RustcEncodable, RustcDecodable, Clone, Copy, Debug)]
@@ -46,6 +48,7 @@ pub enum Abi {
     System,
     RustIntrinsic,
     RustCall,
+    PlatformIntrinsic,
 }
 
 #[allow(non_camel_case_types)]
@@ -94,6 +97,7 @@ const AbiDatas: &'static [AbiData] = &[
     AbiData {abi: System, name: "system" },
     AbiData {abi: RustIntrinsic, name: "rust-intrinsic" },
     AbiData {abi: RustCall, name: "rust-call" },
+    AbiData {abi: PlatformIntrinsic, name: "platform-intrinsic" }
 ];
 
 /// Returns the ABI with the given name (if any).
@@ -138,7 +142,9 @@ impl fmt::Display for Os {
             OsFreebsd => "freebsd".fmt(f),
             OsDragonfly => "dragonfly".fmt(f),
             OsBitrig => "bitrig".fmt(f),
+            OsNetbsd => "netbsd".fmt(f),
             OsOpenbsd => "openbsd".fmt(f),
+            OsNaCl => "nacl".fmt(f),
         }
     }
 }

@@ -30,8 +30,7 @@ use super::type_variable::{BiTo};
 
 use middle::ty::{self, Ty};
 use middle::ty::TyVar;
-use middle::ty_relate::{Relate, RelateResult, TypeRelation};
-use util::ppaux::{Repr};
+use middle::ty::relate::{Relate, RelateResult, TypeRelation};
 
 pub struct Bivariate<'a, 'tcx: 'a> {
     fields: CombineFields<'a, 'tcx>
@@ -73,25 +72,25 @@ impl<'a, 'tcx> TypeRelation<'a, 'tcx> for Bivariate<'a, 'tcx> {
     }
 
     fn tys(&mut self, a: Ty<'tcx>, b: Ty<'tcx>) -> RelateResult<'tcx, Ty<'tcx>> {
-        debug!("{}.tys({}, {})", self.tag(),
-               a.repr(self.fields.infcx.tcx), b.repr(self.fields.infcx.tcx));
+        debug!("{}.tys({:?}, {:?})", self.tag(),
+               a, b);
         if a == b { return Ok(a); }
 
         let infcx = self.fields.infcx;
         let a = infcx.type_variables.borrow().replace_if_possible(a);
         let b = infcx.type_variables.borrow().replace_if_possible(b);
         match (&a.sty, &b.sty) {
-            (&ty::ty_infer(TyVar(a_id)), &ty::ty_infer(TyVar(b_id))) => {
+            (&ty::TyInfer(TyVar(a_id)), &ty::TyInfer(TyVar(b_id))) => {
                 infcx.type_variables.borrow_mut().relate_vars(a_id, BiTo, b_id);
                 Ok(a)
             }
 
-            (&ty::ty_infer(TyVar(a_id)), _) => {
+            (&ty::TyInfer(TyVar(a_id)), _) => {
                 try!(self.fields.instantiate(b, BiTo, a_id));
                 Ok(a)
             }
 
-            (_, &ty::ty_infer(TyVar(b_id))) => {
+            (_, &ty::TyInfer(TyVar(b_id))) => {
                 try!(self.fields.instantiate(a, BiTo, b_id));
                 Ok(a)
             }
@@ -110,8 +109,8 @@ impl<'a, 'tcx> TypeRelation<'a, 'tcx> for Bivariate<'a, 'tcx> {
                   -> RelateResult<'tcx, ty::Binder<T>>
         where T: Relate<'a,'tcx>
     {
-        let a1 = ty::erase_late_bound_regions(self.tcx(), a);
-        let b1 = ty::erase_late_bound_regions(self.tcx(), b);
+        let a1 = self.tcx().erase_late_bound_regions(a);
+        let b1 = self.tcx().erase_late_bound_regions(b);
         let c = try!(self.relate(&a1, &b1));
         Ok(ty::Binder(c))
     }

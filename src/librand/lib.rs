@@ -20,30 +20,39 @@
 #![cfg_attr(stage0, feature(custom_attribute))]
 #![crate_name = "rand"]
 #![crate_type = "rlib"]
-#![doc(html_logo_url = "http://www.rust-lang.org/logos/rust-logo-128x128-blk.png",
+#![doc(html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk.png",
        html_favicon_url = "https://doc.rust-lang.org/favicon.ico",
-       html_root_url = "http://doc.rust-lang.org/nightly/",
-       html_playground_url = "http://play.rust-lang.org/")]
+       html_root_url = "https://doc.rust-lang.org/nightly/",
+       html_playground_url = "https://play.rust-lang.org/",
+       test(attr(deny(warnings))))]
 #![no_std]
 #![staged_api]
 #![unstable(feature = "rand",
-            reason = "use `rand` from crates.io")]
-#![feature(core)]
+            reason = "use `rand` from crates.io",
+            issue = "27703")]
+#![feature(core_float)]
+#![feature(core_intrinsics)]
+#![feature(core_slice_ext)]
 #![feature(no_std)]
+#![feature(num_bits_bytes)]
 #![feature(staged_api)]
 #![feature(step_by)]
+#![feature(custom_attribute)]
+#![allow(unused_attributes)]
 
-#![cfg_attr(test, feature(test, rand, rustc_private))]
+#![cfg_attr(test, feature(test, rand, rustc_private, iter_order_deprecated))]
 
 #![allow(deprecated)]
 
+#[cfg(test)]
 #[macro_use]
-extern crate core;
+extern crate std;
+#[cfg(test)]
+#[macro_use]
+extern crate log;
 
-#[cfg(test)] #[macro_use] extern crate std;
-#[cfg(test)] #[macro_use] extern crate log;
-
-use core::prelude::*;
+use core::f64;
+use core::intrinsics;
 use core::marker::PhantomData;
 
 pub use isaac::{IsaacRng, Isaac64Rng};
@@ -61,7 +70,45 @@ pub mod chacha;
 pub mod reseeding;
 mod rand_impls;
 
+// Temporary trait to implement a few floating-point routines
+// needed by librand; this is necessary because librand doesn't
+// depend on libstd.  This will go away when librand is integrated
+// into libstd.
+trait FloatMath : Sized {
+    fn exp(self) -> Self;
+    fn ln(self) -> Self;
+    fn sqrt(self) -> Self;
+    fn powf(self, n: Self) -> Self;
+}
+
+impl FloatMath for f64 {
+    #[inline]
+    fn exp(self) -> f64 {
+        unsafe { intrinsics::expf64(self) }
+    }
+
+    #[inline]
+    fn ln(self) -> f64 {
+        unsafe { intrinsics::logf64(self) }
+    }
+
+    #[inline]
+    fn powf(self, n: f64) -> f64 {
+        unsafe { intrinsics::powf64(self, n) }
+    }
+
+    #[inline]
+    fn sqrt(self) -> f64 {
+        if self < 0.0 {
+            f64::NAN
+        } else {
+            unsafe { intrinsics::sqrtf64(self) }
+        }
+    }
+}
+
 /// A type that can be randomly generated using an `Rng`.
+#[doc(hidden)]
 pub trait Rand : Sized {
     /// Generates a random instance of this type using the specified source of
     /// randomness.
@@ -177,7 +224,10 @@ pub trait Rng : Sized {
     /// Return an iterator that will yield an infinite number of randomly
     /// generated items.
     fn gen_iter<'a, T: Rand>(&'a mut self) -> Generator<'a, T, Self> {
-        Generator { rng: self, _marker: PhantomData }
+        Generator {
+            rng: self,
+            _marker: PhantomData,
+        }
     }
 
     /// Generate a random value in the range [`low`, `high`).
@@ -232,9 +282,9 @@ pub trait Rng : Sized {
 /// Iterator which will generate a stream of random items.
 ///
 /// This iterator is created via the `gen_iter` method on `Rng`.
-pub struct Generator<'a, T, R:'a> {
+pub struct Generator<'a, T, R: 'a> {
     rng: &'a mut R,
-    _marker: PhantomData<T>
+    _marker: PhantomData<T>,
 }
 
 impl<'a, T: Rand, R: Rng> Iterator for Generator<'a, T, R> {
@@ -248,7 +298,7 @@ impl<'a, T: Rand, R: Rng> Iterator for Generator<'a, T, R> {
 /// Iterator which will continuously generate random ascii characters.
 ///
 /// This iterator is created via the `gen_ascii_chars` method on `Rng`.
-pub struct AsciiGenerator<'a, R:'a> {
+pub struct AsciiGenerator<'a, R: 'a> {
     rng: &'a mut R,
 }
 
@@ -344,7 +394,7 @@ impl SeedableRng<[u32; 4]> for XorShiftRng {
             x: seed[0],
             y: seed[1],
             z: seed[2],
-            w: seed[3]
+            w: seed[3],
         }
     }
 }
@@ -356,7 +406,12 @@ impl Rand for XorShiftRng {
             tuple = rng.gen();
         }
         let (x, y, z, w) = tuple;
-        XorShiftRng { x: x, y: y, z: z, w: w }
+        XorShiftRng {
+            x: x,
+            y: y,
+            z: z,
+            w: w,
+        }
     }
 }
 
@@ -380,7 +435,9 @@ pub struct Closed01<F>(pub F);
 mod test {
     use std::__rand as rand;
 
-    pub struct MyRng<R> { inner: R }
+    pub struct MyRng<R> {
+        inner: R,
+    }
 
     impl<R: rand::Rng> ::Rng for MyRng<R> {
         fn next_u32(&mut self) -> u32 {

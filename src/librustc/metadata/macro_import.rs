@@ -14,10 +14,10 @@ use session::Session;
 use metadata::creader::CrateReader;
 
 use std::collections::{HashSet, HashMap};
-use syntax::ast;
-use syntax::attr;
 use syntax::codemap::Span;
 use syntax::parse::token;
+use syntax::ast;
+use syntax::attr;
 use syntax::visit;
 use syntax::visit::Visitor;
 use syntax::attr::AttrMetaMethods;
@@ -38,6 +38,10 @@ impl<'a> MacroLoader<'a> {
             macros: vec![],
         }
     }
+}
+
+pub fn call_bad_macro_reexport(a: &Session, b: Span) {
+    span_err!(a, b, E0467, "bad macro reexport");
 }
 
 /// Read exported macros.
@@ -90,7 +94,7 @@ impl<'a, 'v> Visitor<'v> for MacroLoader<'a> {
                             if let ast::MetaWord(ref name) = attr.node {
                                 sel.insert(name.clone(), attr.span);
                             } else {
-                                self.sess.span_err(attr.span, "bad macro import");
+                                span_err!(self.sess, attr.span, E0466, "bad macro import");
                             }
                         }
                     }
@@ -99,7 +103,7 @@ impl<'a, 'v> Visitor<'v> for MacroLoader<'a> {
                     let names = match attr.meta_item_list() {
                         Some(names) => names,
                         None => {
-                            self.sess.span_err(attr.span, "bad macro reexport");
+                            call_bad_macro_reexport(self.sess, attr.span);
                             continue;
                         }
                     };
@@ -108,7 +112,7 @@ impl<'a, 'v> Visitor<'v> for MacroLoader<'a> {
                         if let ast::MetaWord(ref name) = attr.node {
                             reexport.insert(name.clone(), attr.span);
                         } else {
-                            self.sess.span_err(attr.span, "bad macro reexport");
+                            call_bad_macro_reexport(self.sess, attr.span);
                         }
                     }
                 }
@@ -140,8 +144,8 @@ impl<'a> MacroLoader<'a> {
         }
 
         if !self.span_whitelist.contains(&vi.span) {
-            self.sess.span_err(vi.span, "an `extern crate` loading macros must be at \
-                                         the crate root");
+            span_err!(self.sess, vi.span, E0468,
+                      "an `extern crate` loading macros must be at the crate root");
             return;
         }
 
@@ -149,8 +153,7 @@ impl<'a> MacroLoader<'a> {
         let mut seen = HashSet::new();
 
         for mut def in macros {
-            let name = token::get_ident(def.ident);
-            seen.insert(name.clone());
+            let name = def.ident.name.as_str();
 
             def.use_locally = match import.as_ref() {
                 None => true,
@@ -161,19 +164,22 @@ impl<'a> MacroLoader<'a> {
                                                               "allow_internal_unstable");
             debug!("load_macros: loaded: {:?}", def);
             self.macros.push(def);
+            seen.insert(name);
         }
 
         if let Some(sel) = import.as_ref() {
-            for (name, span) in sel.iter() {
-                if !seen.contains(name) {
-                    self.sess.span_err(*span, "imported macro not found");
+            for (name, span) in sel {
+                if !seen.contains(&name) {
+                    span_err!(self.sess, *span, E0469,
+                              "imported macro not found");
                 }
             }
         }
 
-        for (name, span) in reexport.iter() {
-            if !seen.contains(name) {
-                self.sess.span_err(*span, "reexported macro not found");
+        for (name, span) in &reexport {
+            if !seen.contains(&name) {
+                span_err!(self.sess, *span, E0470,
+                          "reexported macro not found");
             }
         }
     }

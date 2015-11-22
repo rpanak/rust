@@ -8,6 +8,8 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+#![allow(non_snake_case)]
+
 use prelude::v1::*;
 use os::unix::prelude::*;
 
@@ -18,9 +20,10 @@ use fmt;
 use io::{self, Error, ErrorKind};
 use libc::{self, pid_t, c_void, c_int, gid_t, uid_t};
 use ptr;
-use sys::pipe::AnonPipe;
-use sys::{self, c, cvt, cvt_r};
+use sys::fd::FileDesc;
 use sys::fs::{File, OpenOptions};
+use sys::pipe::AnonPipe;
+use sys::{self, cvt, cvt_r};
 
 ////////////////////////////////////////////////////////////////////////////////
 // Command
@@ -34,7 +37,7 @@ pub struct Command {
     pub cwd: Option<CString>,
     pub uid: Option<uid_t>,
     pub gid: Option<gid_t>,
-    pub detach: bool, // not currently exposed in std::process
+    pub session_leader: bool,
 }
 
 impl Command {
@@ -46,7 +49,7 @@ impl Command {
             cwd: None,
             uid: None,
             gid: None,
-            detach: false,
+            session_leader: false,
         }
     }
 
@@ -83,33 +86,62 @@ impl Command {
 
 /// Unix exit statuses
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
-pub enum ExitStatus {
-    /// Normal termination with an exit code.
-    Code(i32),
+pub struct ExitStatus(c_int);
 
-    /// Termination by signal, with the signal number.
-    ///
-    /// Never generated on Windows.
-    Signal(i32),
+#[cfg(any(target_os = "linux", target_os = "android",
+          target_os = "nacl"))]
+mod status_imp {
+    pub fn WIFEXITED(status: i32) -> bool { (status & 0xff) == 0 }
+    pub fn WEXITSTATUS(status: i32) -> i32 { (status >> 8) & 0xff }
+    pub fn WTERMSIG(status: i32) -> i32 { status & 0x7f }
+}
+
+#[cfg(any(target_os = "macos",
+          target_os = "ios",
+          target_os = "freebsd",
+          target_os = "dragonfly",
+          target_os = "bitrig",
+          target_os = "netbsd",
+          target_os = "openbsd"))]
+mod status_imp {
+    pub fn WIFEXITED(status: i32) -> bool { (status & 0x7f) == 0 }
+    pub fn WEXITSTATUS(status: i32) -> i32 { status >> 8 }
+    pub fn WTERMSIG(status: i32) -> i32 { status & 0o177 }
 }
 
 impl ExitStatus {
-    pub fn success(&self) -> bool {
-        *self == ExitStatus::Code(0)
+    fn exited(&self) -> bool {
+        status_imp::WIFEXITED(self.0)
     }
+
+    pub fn success(&self) -> bool {
+        self.code() == Some(0)
+    }
+
     pub fn code(&self) -> Option<i32> {
-        match *self {
-            ExitStatus::Code(c) => Some(c),
-            _ => None
+        if self.exited() {
+            Some(status_imp::WEXITSTATUS(self.0))
+        } else {
+            None
+        }
+    }
+
+    pub fn signal(&self) -> Option<i32> {
+        if !self.exited() {
+            Some(status_imp::WTERMSIG(self.0))
+        } else {
+            None
         }
     }
 }
 
 impl fmt::Display for ExitStatus {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match *self {
-            ExitStatus::Code(code) =>  write!(f, "exit code: {}", code),
-            ExitStatus::Signal(code) =>  write!(f, "signal: {}", code),
+        if let Some(code) = self.code() {
+            write!(f, "exit code: {}", code)
+        } else {
+            let signal = self.signal().unwrap();
+            write!(f, "signal: {}", signal)
         }
     }
 }
@@ -121,15 +153,17 @@ pub struct Process {
 
 pub enum Stdio {
     Inherit,
-    Piped(AnonPipe),
     None,
+    Raw(c_int),
 }
+
+pub type RawStdio = FileDesc;
 
 const CLOEXEC_MSG_FOOTER: &'static [u8] = b"NOEX";
 
 impl Process {
     pub unsafe fn kill(&self) -> io::Result<()> {
-        try!(cvt(libc::funcs::posix88::signal::kill(self.pid, libc::SIGKILL)));
+        try!(cvt(libc::kill(self.pid, libc::SIGKILL)));
         Ok(())
     }
 
@@ -251,9 +285,9 @@ impl Process {
         }
 
         let setup = |src: Stdio, dst: c_int| {
-            let fd = match src {
-                Stdio::Inherit => return true,
-                Stdio::Piped(pipe) => pipe.into_fd(),
+            match src {
+                Stdio::Inherit => true,
+                Stdio::Raw(fd) => cvt_r(|| libc::dup2(fd, dst)).is_ok(),
 
                 // If a stdio file descriptor is set to be ignored, we open up
                 // /dev/null into that file descriptor. Otherwise, the first
@@ -267,13 +301,12 @@ impl Process {
                     let devnull = CStr::from_ptr(b"/dev/null\0".as_ptr()
                                                     as *const _);
                     if let Ok(f) = File::open_c(devnull, &opts) {
-                        f.into_fd()
+                        cvt_r(|| libc::dup2(f.fd().raw(), dst)).is_ok()
                     } else {
-                        return false
+                        false
                     }
                 }
-            };
-            cvt_r(|| libc::dup2(fd.raw(), dst)).is_ok()
+            }
         };
 
         if !setup(in_fd, libc::STDIN_FILENO) { fail(&mut output) }
@@ -293,13 +326,13 @@ impl Process {
             // fail if we aren't root, so don't bother checking the
             // return value, this is just done as an optimistic
             // privilege dropping function.
-            let _ = c::setgroups(0, ptr::null());
+            let _ = libc::setgroups(0, ptr::null());
 
             if libc::setuid(u as libc::uid_t) != 0 {
                 fail(&mut output);
             }
         }
-        if cfg.detach {
+        if cfg.session_leader {
             // Don't check the error of setsid because it fails if we're the
             // process leader already. We just forked so it shouldn't return
             // error, but ignore it anyway.
@@ -311,23 +344,54 @@ impl Process {
         if !envp.is_null() {
             *sys::os::environ() = envp as *const _;
         }
-        let _ = libc::execvp(*argv, argv as *mut _);
+
+        #[cfg(not(target_os = "nacl"))]
+        unsafe fn reset_signal_handling(output: &mut AnonPipe) {
+            use mem;
+            // Reset signal handling so the child process starts in a
+            // standardized state. libstd ignores SIGPIPE, and signal-handling
+            // libraries often set a mask. Child processes inherit ignored
+            // signals and the signal mask from their parent, but most
+            // UNIX programs do not reset these things on their own, so we
+            // need to clean things up now to avoid confusing the program
+            // we're about to run.
+            let mut set: libc::sigset_t = mem::uninitialized();
+            if libc::sigemptyset(&mut set) != 0 ||
+                libc::pthread_sigmask(libc::SIG_SETMASK, &set, ptr::null_mut()) != 0 ||
+                libc::signal(
+                    libc::SIGPIPE, mem::transmute(libc::SIG_DFL)
+                        ) == mem::transmute(libc::SIG_ERR)
+            {
+                fail(output);
+            }
+        }
+        #[cfg(target_os = "nacl")]
+        unsafe fn reset_signal_handling(_output: &mut AnonPipe) {
+            // NaCl has no signal support.
+        }
+        reset_signal_handling(&mut output);
+
+        let _ = libc::execvp(*argv, argv);
         fail(&mut output)
+    }
+
+    pub fn id(&self) -> u32 {
+        self.pid as u32
     }
 
     pub fn wait(&self) -> io::Result<ExitStatus> {
         let mut status = 0 as c_int;
-        try!(cvt_r(|| unsafe { c::waitpid(self.pid, &mut status, 0) }));
-        Ok(translate_status(status))
+        try!(cvt_r(|| unsafe { libc::waitpid(self.pid, &mut status, 0) }));
+        Ok(ExitStatus(status))
     }
 
     pub fn try_wait(&self) -> Option<ExitStatus> {
         let mut status = 0 as c_int;
         match cvt_r(|| unsafe {
-            c::waitpid(self.pid, &mut status, c::WNOHANG)
+            libc::waitpid(self.pid, &mut status, libc::WNOHANG)
         }) {
             Ok(0) => None,
-            Ok(n) if n == self.pid => Some(translate_status(status)),
+            Ok(n) if n == self.pid => Some(ExitStatus(status)),
             Ok(n) => panic!("unknown pid: {}", n),
             Err(e) => panic!("unknown waitpid error: {}", e),
         }
@@ -381,34 +445,88 @@ fn make_envp(env: Option<&HashMap<OsString, OsString>>)
 
         (ptrs.as_ptr() as *const _, tmps, ptrs)
     } else {
-        (0 as *const _, Vec::new(), Vec::new())
+        (ptr::null(), Vec::new(), Vec::new())
     }
 }
 
-fn translate_status(status: c_int) -> ExitStatus {
-    #![allow(non_snake_case)]
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    mod imp {
-        pub fn WIFEXITED(status: i32) -> bool { (status & 0xff) == 0 }
-        pub fn WEXITSTATUS(status: i32) -> i32 { (status >> 8) & 0xff }
-        pub fn WTERMSIG(status: i32) -> i32 { status & 0x7f }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use prelude::v1::*;
+
+    use ffi::OsStr;
+    use mem;
+    use ptr;
+    use libc;
+    use slice;
+    use sys::{self, cvt, pipe};
+
+    macro_rules! t {
+        ($e:expr) => {
+            match $e {
+                Ok(t) => t,
+                Err(e) => panic!("received error for `{}`: {}", stringify!($e), e),
+            }
+        }
     }
 
-    #[cfg(any(target_os = "macos",
-              target_os = "ios",
-              target_os = "freebsd",
-              target_os = "dragonfly",
-              target_os = "bitrig",
-              target_os = "openbsd"))]
-    mod imp {
-        pub fn WIFEXITED(status: i32) -> bool { (status & 0x7f) == 0 }
-        pub fn WEXITSTATUS(status: i32) -> i32 { status >> 8 }
-        pub fn WTERMSIG(status: i32) -> i32 { status & 0o177 }
+    #[cfg(not(target_os = "android"))]
+    extern {
+        #[cfg_attr(target_os = "netbsd", link_name = "__sigaddset14")]
+        fn sigaddset(set: *mut libc::sigset_t, signum: libc::c_int) -> libc::c_int;
     }
 
-    if imp::WIFEXITED(status) {
-        ExitStatus::Code(imp::WEXITSTATUS(status))
-    } else {
-        ExitStatus::Signal(imp::WTERMSIG(status))
+    #[cfg(target_os = "android")]
+    unsafe fn sigaddset(set: *mut libc::sigset_t, signum: libc::c_int) -> libc::c_int {
+        let raw = slice::from_raw_parts_mut(set as *mut u8, mem::size_of::<libc::sigset_t>());
+        let bit = (signum - 1) as usize;
+        raw[bit / 8] |= 1 << (bit % 8);
+        return 0;
+    }
+
+    // See #14232 for more information, but it appears that signal delivery to a
+    // newly spawned process may just be raced in the OSX, so to prevent this
+    // test from being flaky we ignore it on OSX.
+    #[test]
+    #[cfg_attr(target_os = "macos", ignore)]
+    #[cfg_attr(target_os = "nacl", ignore)] // no signals on NaCl.
+    fn test_process_mask() {
+        unsafe {
+            // Test to make sure that a signal mask does not get inherited.
+            let cmd = Command::new(OsStr::new("cat"));
+            let (stdin_read, stdin_write) = t!(sys::pipe::anon_pipe());
+            let (stdout_read, stdout_write) = t!(sys::pipe::anon_pipe());
+
+            let mut set: libc::sigset_t = mem::uninitialized();
+            let mut old_set: libc::sigset_t = mem::uninitialized();
+            t!(cvt(libc::sigemptyset(&mut set)));
+            t!(cvt(sigaddset(&mut set, libc::SIGINT)));
+            t!(cvt(libc::pthread_sigmask(libc::SIG_SETMASK, &set, &mut old_set)));
+
+            let cat = t!(Process::spawn(&cmd, Stdio::Raw(stdin_read.raw()),
+                                              Stdio::Raw(stdout_write.raw()),
+                                              Stdio::None));
+            drop(stdin_read);
+            drop(stdout_write);
+
+            t!(cvt(libc::pthread_sigmask(libc::SIG_SETMASK, &old_set,
+                                         ptr::null_mut())));
+
+            t!(cvt(libc::kill(cat.id() as libc::pid_t, libc::SIGINT)));
+            // We need to wait until SIGINT is definitely delivered. The
+            // easiest way is to write something to cat, and try to read it
+            // back: if SIGINT is unmasked, it'll get delivered when cat is
+            // next scheduled.
+            let _ = stdin_write.write(b"Hello");
+            drop(stdin_write);
+
+            // Either EOF or failure (EPIPE) is okay.
+            let mut buf = [0; 5];
+            if let Ok(ret) = stdout_read.read(&mut buf) {
+                assert!(ret == 0);
+            }
+
+            t!(cat.wait());
+        }
     }
 }

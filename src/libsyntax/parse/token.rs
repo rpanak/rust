@@ -82,8 +82,8 @@ pub enum Lit {
     Float(ast::Name),
     Str_(ast::Name),
     StrRaw(ast::Name, usize), /* raw str delimited by n hash symbols */
-    Binary(ast::Name),
-    BinaryRaw(ast::Name, usize), /* raw binary str delimited by n hash symbols */
+    ByteStr(ast::Name),
+    ByteStrRaw(ast::Name, usize), /* raw byte str delimited by n hash symbols */
 }
 
 impl Lit {
@@ -93,8 +93,8 @@ impl Lit {
             Char(_) => "char",
             Integer(_) => "integer",
             Float(_) => "float",
-            Str_(_) | StrRaw(..) => "str",
-            Binary(_) | BinaryRaw(..) => "binary str"
+            Str_(_) | StrRaw(..) => "string",
+            ByteStr(_) | ByteStrRaw(..) => "byte string"
         }
     }
 }
@@ -381,12 +381,13 @@ pub enum Nonterminal {
     NtMeta(P<ast::MetaItem>),
     NtPath(Box<ast::Path>),
     NtTT(P<ast::TokenTree>), // needs P'ed to break a circularity
-    // These is not exposed to macros, but is used by quasiquote.
+    // These are not exposed to macros, but are used by quasiquote.
     NtArm(ast::Arm),
     NtImplItem(P<ast::ImplItem>),
     NtTraitItem(P<ast::TraitItem>),
     NtGenerics(ast::Generics),
     NtWhereClause(ast::WhereClause),
+    NtArg(ast::Arg),
 }
 
 impl fmt::Debug for Nonterminal {
@@ -407,6 +408,7 @@ impl fmt::Debug for Nonterminal {
             NtTraitItem(..) => f.pad("NtTraitItem(..)"),
             NtGenerics(..) => f.pad("NtGenerics(..)"),
             NtWhereClause(..) => f.pad("NtWhereClause(..)"),
+            NtArg(..) => f.pad("NtArg(..)"),
         }
     }
 }
@@ -453,7 +455,7 @@ macro_rules! declare_special_idents_and_keywords {(
             #[allow(non_upper_case_globals)]
             pub const $si_static: ast::Ident = ast::Ident {
                 name: ast::Name($si_name),
-                ctxt: 0,
+                ctxt: ast::EMPTY_CTXT,
             };
          )*
     }
@@ -462,7 +464,7 @@ macro_rules! declare_special_idents_and_keywords {(
         use ast;
         $(
             #[allow(non_upper_case_globals)]
-            pub const $si_static: ast::Name =  ast::Name($si_name);
+            pub const $si_static: ast::Name = ast::Name($si_name);
         )*
     }
 
@@ -575,13 +577,13 @@ declare_special_idents_and_keywords! {
         (36,                         Type,       "type");
         (37,                         Unsafe,     "unsafe");
         (38,                         Use,        "use");
-        (39,                         Virtual,    "virtual");
-        (40,                         While,      "while");
-        (41,                         Continue,   "continue");
-        (42,                         Box,        "box");
-        (43,                         Const,      "const");
-        (44,                         Where,      "where");
+        (39,                         While,      "while");
+        (40,                         Continue,   "continue");
+        (41,                         Box,        "box");
+        (42,                         Const,      "const");
+        (43,                         Where,      "where");
         'reserved:
+        (44,                         Virtual,    "virtual");
         (45,                         Proc,       "proc");
         (46,                         Alignof,    "alignof");
         (47,                         Become,     "become");
@@ -647,6 +649,12 @@ impl InternedString {
             string: string,
         }
     }
+
+    #[inline]
+    pub fn new_from_name(name: ast::Name) -> InternedString {
+        let interner = get_ident_interner();
+        InternedString::new_from_rc_str(interner.get(name))
+    }
 }
 
 impl Deref for InternedString {
@@ -678,7 +686,7 @@ impl<'a> PartialEq<&'a str> for InternedString {
     }
 }
 
-impl<'a> PartialEq<InternedString > for &'a str {
+impl<'a> PartialEq<InternedString> for &'a str {
     #[inline(always)]
     fn eq(&self, other: &InternedString) -> bool {
         PartialEq::eq(*self, &other.string[..])
@@ -691,7 +699,7 @@ impl<'a> PartialEq<InternedString > for &'a str {
 
 impl Decodable for InternedString {
     fn decode<D: Decoder>(d: &mut D) -> Result<InternedString, D::Error> {
-        Ok(get_name(get_ident_interner().intern(&try!(d.read_str())[..])))
+        Ok(intern(try!(d.read_str()).as_ref()).as_str())
     }
 }
 
@@ -701,25 +709,11 @@ impl Encodable for InternedString {
     }
 }
 
-/// Returns the string contents of a name, using the thread-local interner.
-#[inline]
-pub fn get_name(name: ast::Name) -> InternedString {
-    let interner = get_ident_interner();
-    InternedString::new_from_rc_str(interner.get(name))
-}
-
-/// Returns the string contents of an identifier, using the thread-local
-/// interner.
-#[inline]
-pub fn get_ident(ident: ast::Ident) -> InternedString {
-    get_name(ident.name)
-}
-
 /// Interns and returns the string contents of an identifier, using the
 /// thread-local interner.
 #[inline]
 pub fn intern_and_get_ident(s: &str) -> InternedString {
-    get_name(intern(s))
+    intern(s).as_str()
 }
 
 /// Maps a string to its interned representation.
@@ -737,19 +731,19 @@ pub fn gensym(s: &str) -> ast::Name {
 /// Maps a string to an identifier with an empty syntax context.
 #[inline]
 pub fn str_to_ident(s: &str) -> ast::Ident {
-    ast::Ident::new(intern(s))
+    ast::Ident::with_empty_ctxt(intern(s))
 }
 
 /// Maps a string to a gensym'ed identifier.
 #[inline]
 pub fn gensym_ident(s: &str) -> ast::Ident {
-    ast::Ident::new(gensym(s))
+    ast::Ident::with_empty_ctxt(gensym(s))
 }
 
 // create a fresh name that maps to the same string as the old one.
 // note that this guarantees that str_ptr_eq(ident_to_string(src),interner_get(fresh_name(src)));
 // that is, that the new name and the old one are connected to ptr_eq strings.
-pub fn fresh_name(src: &ast::Ident) -> ast::Name {
+pub fn fresh_name(src: ast::Ident) -> ast::Name {
     let interner = get_ident_interner();
     interner.gensym_copy(src.name)
     // following: debug version. Could work in final except that it's incompatible with
@@ -761,7 +755,7 @@ pub fn fresh_name(src: &ast::Ident) -> ast::Name {
 
 // create a fresh mark.
 pub fn fresh_mark() -> ast::Mrk {
-    gensym("mark").usize() as u32
+    gensym("mark").0
 }
 
 #[cfg(test)]
@@ -771,7 +765,7 @@ mod tests {
     use ext::mtwt;
 
     fn mark_ident(id : ast::Ident, m : ast::Mrk) -> ast::Ident {
-        ast::Ident { name: id.name, ctxt:mtwt::apply_mark(m, id.ctxt) }
+        ast::Ident::new(id.name, mtwt::apply_mark(m, id.ctxt))
     }
 
     #[test] fn mtwt_token_eq_test() {

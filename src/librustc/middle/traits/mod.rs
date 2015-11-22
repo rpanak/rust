@@ -15,33 +15,36 @@ pub use self::FulfillmentErrorCode::*;
 pub use self::Vtable::*;
 pub use self::ObligationCauseCode::*;
 
+use middle::def_id::DefId;
 use middle::free_region::FreeRegionMap;
 use middle::subst;
-use middle::ty::{self, HasProjectionTypes, Ty};
-use middle::ty_fold::TypeFoldable;
+use middle::ty::{self, HasTypeFlags, Ty};
+use middle::ty::fold::TypeFoldable;
 use middle::infer::{self, fixup_err_to_string, InferCtxt};
-use std::slice::Iter;
+
 use std::rc::Rc;
 use syntax::ast;
 use syntax::codemap::{Span, DUMMY_SP};
-use util::ppaux::Repr;
 
+pub use self::error_reporting::TraitErrorKey;
 pub use self::error_reporting::report_fulfillment_errors;
 pub use self::error_reporting::report_overflow_error;
 pub use self::error_reporting::report_selection_error;
-pub use self::error_reporting::suggest_new_overflow_limit;
+pub use self::error_reporting::report_object_safety_error;
 pub use self::coherence::orphan_check;
 pub use self::coherence::overlapping_impls;
 pub use self::coherence::OrphanCheckErr;
-pub use self::fulfill::{FulfillmentContext, RegionObligation};
+pub use self::fulfill::{FulfillmentContext, FulfilledPredicates, RegionObligation};
 pub use self::project::MismatchedProjectionTypes;
 pub use self::project::normalize;
 pub use self::project::Normalized;
 pub use self::object_safety::is_object_safe;
+pub use self::object_safety::astconv_object_safety_violations;
 pub use self::object_safety::object_safety_violations;
 pub use self::object_safety::ObjectSafetyViolation;
 pub use self::object_safety::MethodViolationCode;
 pub use self::object_safety::is_vtable_safe_method;
+pub use self::select::EvaluationCache;
 pub use self::select::SelectionContext;
 pub use self::select::SelectionCache;
 pub use self::select::{MethodMatchResult, MethodMatched, MethodAmbiguous, MethodDidNotMatch};
@@ -63,6 +66,7 @@ mod fulfill;
 mod project;
 mod object_safety;
 mod select;
+mod structural_impls;
 mod util;
 
 /// An `Obligation` represents some trait reference (e.g. `int:Eq`) for
@@ -82,7 +86,7 @@ pub type PredicateObligation<'tcx> = Obligation<'tcx, ty::Predicate<'tcx>>;
 pub type TraitObligation<'tcx> = Obligation<'tcx, ty::PolyTraitPredicate<'tcx>>;
 
 /// Why did we incur this obligation? Used for error reporting.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ObligationCause<'tcx> {
     pub span: Span,
 
@@ -97,14 +101,26 @@ pub struct ObligationCause<'tcx> {
     pub code: ObligationCauseCode<'tcx>
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ObligationCauseCode<'tcx> {
     /// Not well classified or should be obvious from span.
     MiscObligation,
 
+    /// Obligation that triggers warning until RFC 1214 is fully in place.
+    RFC1214(Rc<ObligationCauseCode<'tcx>>),
+
+    /// This is the trait reference from the given projection
+    SliceOrArrayElem,
+
+    /// This is the trait reference from the given projection
+    ProjectionWf(ty::ProjectionTy<'tcx>),
+
     /// In an impl of trait X for type Y, type Y must
     /// also implement all supertraits of X.
-    ItemObligation(ast::DefId),
+    ItemObligation(DefId),
+
+    /// A type like `&'a T` is WF only if `T: 'a`.
+    ReferenceOutlivesReferent(Ty<'tcx>),
 
     /// Obligation incurred due to an object cast.
     ObjectCastObligation(/* Object type */ Ty<'tcx>),
@@ -126,7 +142,6 @@ pub enum ObligationCauseCode<'tcx> {
     // static items must have `Sync` type
     SharedStatic,
 
-
     BuiltinDerivedObligation(DerivedObligationCause<'tcx>),
 
     ImplDerivedObligation(DerivedObligationCause<'tcx>),
@@ -134,7 +149,7 @@ pub enum ObligationCauseCode<'tcx> {
     CompareImplMethodObligation,
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DerivedObligationCause<'tcx> {
     /// The trait reference of the parent obligation that led to the
     /// current obligation. Note that only trait obligations lead to
@@ -146,9 +161,9 @@ pub struct DerivedObligationCause<'tcx> {
     parent_code: Rc<ObligationCauseCode<'tcx>>
 }
 
-pub type Obligations<'tcx, O> = subst::VecPerParamSpace<Obligation<'tcx, O>>;
-pub type PredicateObligations<'tcx> = subst::VecPerParamSpace<PredicateObligation<'tcx>>;
-pub type TraitObligations<'tcx> = subst::VecPerParamSpace<TraitObligation<'tcx>>;
+pub type Obligations<'tcx, O> = Vec<Obligation<'tcx, O>>;
+pub type PredicateObligations<'tcx> = Vec<PredicateObligation<'tcx>>;
+pub type TraitObligations<'tcx> = Vec<TraitObligation<'tcx>>;
 
 pub type Selection<'tcx> = Vtable<'tcx, PredicateObligation<'tcx>>;
 
@@ -157,8 +172,8 @@ pub enum SelectionError<'tcx> {
     Unimplemented,
     OutputTypeParameterMismatch(ty::PolyTraitRef<'tcx>,
                                 ty::PolyTraitRef<'tcx>,
-                                ty::type_err<'tcx>),
-    TraitNotObjectSafe(ast::DefId),
+                                ty::error::TypeError<'tcx>),
+    TraitNotObjectSafe(DefId),
 }
 
 pub struct FulfillmentError<'tcx> {
@@ -220,7 +235,7 @@ pub type SelectionResult<'tcx, T> = Result<Option<T>, SelectionError<'tcx>>;
 /// ### The type parameter `N`
 ///
 /// See explanation on `VtableImplData`.
-#[derive(Debug,Clone)]
+#[derive(Clone)]
 pub enum Vtable<'tcx, N> {
     /// Vtable identifying a particular impl.
     VtableImpl(VtableImplData<'tcx, N>),
@@ -246,7 +261,7 @@ pub enum Vtable<'tcx, N> {
     /// Vtable automatically generated for a closure. The def ID is the ID
     /// of the closure expression. This is a `VtableImpl` in spirit, but the
     /// impl is generated by the compiler and does not appear in the source.
-    VtableClosure(ast::DefId, subst::Substs<'tcx>),
+    VtableClosure(VtableClosureData<'tcx, N>),
 
     /// Same as above, but for a fn pointer type with the given signature.
     VtableFnPointer(ty::Ty<'tcx>),
@@ -264,40 +279,50 @@ pub enum Vtable<'tcx, N> {
 /// impl, and nested obligations are satisfied later.
 #[derive(Clone, PartialEq, Eq)]
 pub struct VtableImplData<'tcx, N> {
-    pub impl_def_id: ast::DefId,
+    pub impl_def_id: DefId,
     pub substs: subst::Substs<'tcx>,
-    pub nested: subst::VecPerParamSpace<N>
-}
-
-#[derive(Debug,Clone)]
-pub struct VtableDefaultImplData<N> {
-    pub trait_def_id: ast::DefId,
     pub nested: Vec<N>
 }
 
-#[derive(Debug,Clone)]
+#[derive(Clone, PartialEq, Eq)]
+pub struct VtableClosureData<'tcx, N> {
+    pub closure_def_id: DefId,
+    pub substs: ty::ClosureSubsts<'tcx>,
+    /// Nested obligations. This can be non-empty if the closure
+    /// signature contains associated types.
+    pub nested: Vec<N>
+}
+
+#[derive(Clone)]
+pub struct VtableDefaultImplData<N> {
+    pub trait_def_id: DefId,
+    pub nested: Vec<N>
+}
+
+#[derive(Clone)]
 pub struct VtableBuiltinData<N> {
-    pub nested: subst::VecPerParamSpace<N>
+    pub nested: Vec<N>
 }
 
 /// A vtable for some object-safe trait `Foo` automatically derived
 /// for the object type `Foo`.
 #[derive(PartialEq,Eq,Clone)]
 pub struct VtableObjectData<'tcx> {
-    /// the object type `Foo`.
-    pub object_ty: Ty<'tcx>,
-
     /// `Foo` upcast to the obligation trait. This will be some supertrait of `Foo`.
     pub upcast_trait_ref: ty::PolyTraitRef<'tcx>,
+
+    /// The vtable is formed by concatenating together the method lists of
+    /// the base object trait and all supertraits; this is the start of
+    /// `upcast_trait_ref`'s methods in that vtable.
+    pub vtable_base: usize
 }
 
 /// Creates predicate obligations from the generic bounds.
-pub fn predicates_for_generics<'tcx>(tcx: &ty::ctxt<'tcx>,
-                                     cause: ObligationCause<'tcx>,
+pub fn predicates_for_generics<'tcx>(cause: ObligationCause<'tcx>,
                                      generic_bounds: &ty::InstantiatedPredicates<'tcx>)
                                      -> PredicateObligations<'tcx>
 {
-    util::predicates_for_generics(tcx, cause, 0, generic_bounds)
+    util::predicates_for_generics(cause, 0, generic_bounds)
 }
 
 /// Determines whether the type `ty` is known to meet `bound` and
@@ -305,89 +330,67 @@ pub fn predicates_for_generics<'tcx>(tcx: &ty::ctxt<'tcx>,
 /// `bound` or is not known to meet bound (note that this is
 /// conservative towards *no impl*, which is the opposite of the
 /// `evaluate` methods).
-pub fn evaluate_builtin_bound<'a,'tcx>(infcx: &InferCtxt<'a,'tcx>,
-                                       typer: &ty::ClosureTyper<'tcx>,
-                                       ty: Ty<'tcx>,
-                                       bound: ty::BuiltinBound,
-                                       span: Span)
-                                       -> SelectionResult<'tcx, ()>
-{
-    debug!("type_known_to_meet_builtin_bound(ty={}, bound={:?})",
-           ty.repr(infcx.tcx),
-           bound);
-
-    let mut fulfill_cx = FulfillmentContext::new();
-
-    // We can use a dummy node-id here because we won't pay any mind
-    // to region obligations that arise (there shouldn't really be any
-    // anyhow).
-    let cause = ObligationCause::misc(span, ast::DUMMY_NODE_ID);
-
-    fulfill_cx.register_builtin_bound(infcx, ty, bound, cause);
-
-    // Note: we only assume something is `Copy` if we can
-    // *definitively* show that it implements `Copy`. Otherwise,
-    // assume it is move; linear is always ok.
-    let result = match fulfill_cx.select_all_or_error(infcx, typer) {
-        Ok(()) => Ok(Some(())), // Success, we know it implements Copy.
-        Err(errors) => {
-            // If there were any hard errors, propagate an arbitrary
-            // one of those. If no hard errors at all, report
-            // ambiguity.
-            let sel_error =
-                errors.iter()
-                      .filter_map(|err| {
-                          match err.code {
-                              CodeAmbiguity => None,
-                              CodeSelectionError(ref e) => Some(e.clone()),
-                              CodeProjectionError(_) => {
-                                  infcx.tcx.sess.span_bug(
-                                      span,
-                                      "projection error while selecting?")
-                              }
-                          }
-                      })
-                      .next();
-            match sel_error {
-                None => { Ok(None) }
-                Some(e) => { Err(e) }
-            }
-        }
-    };
-
-    debug!("type_known_to_meet_builtin_bound: ty={} bound={:?} result={:?}",
-           ty.repr(infcx.tcx),
-           bound,
-           result);
-
-    result
-}
-
 pub fn type_known_to_meet_builtin_bound<'a,'tcx>(infcx: &InferCtxt<'a,'tcx>,
-                                                 typer: &ty::ClosureTyper<'tcx>,
                                                  ty: Ty<'tcx>,
                                                  bound: ty::BuiltinBound,
                                                  span: Span)
                                                  -> bool
 {
-    match evaluate_builtin_bound(infcx, typer, ty, bound, span) {
-        Ok(Some(())) => {
-            // definitely impl'd
-            true
+    debug!("type_known_to_meet_builtin_bound(ty={:?}, bound={:?})",
+           ty,
+           bound);
+
+    let cause = ObligationCause::misc(span, ast::DUMMY_NODE_ID);
+    let obligation =
+        util::predicate_for_builtin_bound(infcx.tcx, cause, bound, 0, ty);
+    let obligation = match obligation {
+        Ok(o) => o,
+        Err(..) => return false
+    };
+    let result = SelectionContext::new(infcx)
+        .evaluate_obligation_conservatively(&obligation);
+    debug!("type_known_to_meet_builtin_bound: ty={:?} bound={:?} => {:?}",
+           ty, bound, result);
+
+    if result && (ty.has_infer_types() || ty.has_closure_types()) {
+        // Because of inference "guessing", selection can sometimes claim
+        // to succeed while the success requires a guess. To ensure
+        // this function's result remains infallible, we must confirm
+        // that guess. While imperfect, I believe this is sound.
+
+        let mut fulfill_cx = FulfillmentContext::new(false);
+
+        // We can use a dummy node-id here because we won't pay any mind
+        // to region obligations that arise (there shouldn't really be any
+        // anyhow).
+        let cause = ObligationCause::misc(span, ast::DUMMY_NODE_ID);
+
+        fulfill_cx.register_builtin_bound(infcx, ty, bound, cause);
+
+        // Note: we only assume something is `Copy` if we can
+        // *definitively* show that it implements `Copy`. Otherwise,
+        // assume it is move; linear is always ok.
+        match fulfill_cx.select_all_or_error(infcx) {
+            Ok(()) => {
+                debug!("type_known_to_meet_builtin_bound: ty={:?} bound={:?} success",
+                       ty,
+                       bound);
+                true
+            }
+            Err(e) => {
+                debug!("type_known_to_meet_builtin_bound: ty={:?} bound={:?} errors={:?}",
+                       ty,
+                       bound,
+                       e);
+                false
+            }
         }
-        Ok(None) => {
-            // ambiguous: if coherence check was successful, shouldn't
-            // happen, but we might have reported an error and been
-            // soldering on, so just treat this like not implemented
-            false
-        }
-        Err(_) => {
-            // errors: not implemented.
-            false
-        }
+    } else {
+        result
     }
 }
 
+// FIXME: this is gonna need to be removed ...
 /// Normalizes the parameter environment, reporting errors if they occur.
 pub fn normalize_param_env_or_error<'a,'tcx>(unnormalized_env: ty::ParameterEnvironment<'a,'tcx>,
                                              cause: ObligationCause<'tcx>)
@@ -412,16 +415,34 @@ pub fn normalize_param_env_or_error<'a,'tcx>(unnormalized_env: ty::ParameterEnvi
     let span = cause.span;
     let body_id = cause.body_id;
 
-    debug!("normalize_param_env_or_error(unnormalized_env={})",
-           unnormalized_env.repr(tcx));
+    debug!("normalize_param_env_or_error(unnormalized_env={:?})",
+           unnormalized_env);
 
-    let infcx = infer::new_infer_ctxt(tcx);
-    let predicates = match fully_normalize(&infcx, &unnormalized_env, cause,
-                                           &unnormalized_env.caller_bounds) {
+    let predicates: Vec<_> =
+        util::elaborate_predicates(tcx, unnormalized_env.caller_bounds.clone())
+        .filter(|p| !p.is_global()) // (*)
+        .collect();
+
+    // (*) Any predicate like `i32: Trait<u32>` or whatever doesn't
+    // need to be in the *environment* to be proven, so screen those
+    // out. This is important for the soundness of inter-fn
+    // caching. Note though that we should probably check that these
+    // predicates hold at the point where the environment is
+    // constructed, but I am not currently doing so out of laziness.
+    // -nmatsakis
+
+    debug!("normalize_param_env_or_error: elaborated-predicates={:?}",
+           predicates);
+
+    let elaborated_env = unnormalized_env.with_caller_bounds(predicates);
+
+    let infcx = infer::new_infer_ctxt(tcx, &tcx.tables, Some(elaborated_env), false);
+    let predicates = match fully_normalize(&infcx, cause,
+                                           &infcx.parameter_environment.caller_bounds) {
         Ok(predicates) => predicates,
         Err(errors) => {
             report_fulfillment_errors(&infcx, &errors);
-            return unnormalized_env; // an unnormalized env is better than nothing
+            return infcx.parameter_environment; // an unnormalized env is better than nothing
         }
     };
 
@@ -439,40 +460,49 @@ pub fn normalize_param_env_or_error<'a,'tcx>(unnormalized_env: ty::ParameterEnvi
             // all things considered.
             let err_msg = fixup_err_to_string(fixup_err);
             tcx.sess.span_err(span, &err_msg);
-            return unnormalized_env; // an unnormalized env is better than nothing
+            return infcx.parameter_environment; // an unnormalized env is better than nothing
         }
     };
 
-    debug!("normalize_param_env_or_error: predicates={}",
-           predicates.repr(tcx));
-
-    unnormalized_env.with_caller_bounds(predicates)
+    infcx.parameter_environment.with_caller_bounds(predicates)
 }
 
 pub fn fully_normalize<'a,'tcx,T>(infcx: &InferCtxt<'a,'tcx>,
-                                  closure_typer: &ty::ClosureTyper<'tcx>,
                                   cause: ObligationCause<'tcx>,
                                   value: &T)
                                   -> Result<T, Vec<FulfillmentError<'tcx>>>
-    where T : TypeFoldable<'tcx> + HasProjectionTypes + Clone + Repr<'tcx>
+    where T : TypeFoldable<'tcx> + HasTypeFlags
 {
-    let tcx = closure_typer.tcx();
+    debug!("normalize_param_env(value={:?})", value);
 
-    debug!("normalize_param_env(value={})", value.repr(tcx));
+    let mut selcx = &mut SelectionContext::new(infcx);
+    // FIXME (@jroesch) ISSUE 26721
+    // I'm not sure if this is a bug or not, needs further investigation.
+    // It appears that by reusing the fulfillment_cx here we incur more
+    // obligations and later trip an asssertion on regionck.rs line 337.
+    //
+    // The two possibilities I see is:
+    //      - normalization is not actually fully happening and we
+    //        have a bug else where
+    //      - we are adding a duplicate bound into the list causing
+    //        its size to change.
+    //
+    // I think we should probably land this refactor and then come
+    // back to this is a follow-up patch.
+    let mut fulfill_cx = FulfillmentContext::new(false);
 
-    let mut selcx = &mut SelectionContext::new(infcx, closure_typer);
-    let mut fulfill_cx = FulfillmentContext::new();
     let Normalized { value: normalized_value, obligations } =
         project::normalize(selcx, cause, value);
-    debug!("normalize_param_env: normalized_value={} obligations={}",
-           normalized_value.repr(tcx),
-           obligations.repr(tcx));
+    debug!("normalize_param_env: normalized_value={:?} obligations={:?}",
+           normalized_value,
+           obligations);
     for obligation in obligations {
         fulfill_cx.register_predicate_obligation(selcx.infcx(), obligation);
     }
-    try!(fulfill_cx.select_all_or_error(infcx, closure_typer));
+
+    try!(fulfill_cx.select_all_or_error(infcx));
     let resolved_value = infcx.resolve_type_vars_if_possible(&normalized_value);
-    debug!("normalize_param_env: resolved_value={}", resolved_value.repr(tcx));
+    debug!("normalize_param_env: resolved_value={:?}", resolved_value);
     Ok(resolved_value)
 }
 
@@ -524,115 +554,58 @@ impl<'tcx> ObligationCause<'tcx> {
     }
 }
 
+/// This marker is used in some caches to record whether the
+/// predicate, if it is found to be false, will yield a warning (due
+/// to RFC1214) or an error. We separate these two cases in the cache
+/// so that if we see the same predicate twice, first resulting in a
+/// warning, and next resulting in an error, we still report the
+/// error, rather than considering it a duplicate.
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+pub struct RFC1214Warning(bool);
+
+impl<'tcx> ObligationCauseCode<'tcx> {
+    pub fn is_rfc1214(&self) -> bool {
+        match *self {
+            ObligationCauseCode::RFC1214(..) => true,
+            _ => false,
+        }
+    }
+}
+
 impl<'tcx, N> Vtable<'tcx, N> {
-    pub fn iter_nested(&self) -> Iter<N> {
-        match *self {
-            VtableImpl(ref i) => i.iter_nested(),
-            VtableParam(ref n) => n.iter(),
-            VtableBuiltin(ref i) => i.iter_nested(),
-            VtableObject(_) |
-            VtableDefaultImpl(..) | VtableFnPointer(..) |
-            VtableClosure(..) => (&[]).iter(),
-        }
-    }
-
-    pub fn map_nested<M, F>(&self, op: F) -> Vtable<'tcx, M> where
-        F: FnMut(&N) -> M,
-    {
-        match *self {
-            VtableImpl(ref i) => VtableImpl(i.map_nested(op)),
-            VtableDefaultImpl(ref t) => VtableDefaultImpl(t.map_nested(op)),
-            VtableFnPointer(ref sig) => VtableFnPointer((*sig).clone()),
-            VtableClosure(d, ref s) => VtableClosure(d, s.clone()),
-            VtableParam(ref n) => VtableParam(n.iter().map(op).collect()),
-            VtableObject(ref p) => VtableObject(p.clone()),
-            VtableBuiltin(ref b) => VtableBuiltin(b.map_nested(op)),
-        }
-    }
-
-    pub fn map_move_nested<M, F>(self, op: F) -> Vtable<'tcx, M> where
-        F: FnMut(N) -> M,
-    {
+    pub fn nested_obligations(self) -> Vec<N> {
         match self {
-            VtableImpl(i) => VtableImpl(i.map_move_nested(op)),
-            VtableFnPointer(sig) => VtableFnPointer(sig),
-            VtableClosure(d, s) => VtableClosure(d, s),
-            VtableDefaultImpl(t) => VtableDefaultImpl(t.map_move_nested(op)),
-            VtableParam(n) => VtableParam(n.into_iter().map(op).collect()),
-            VtableObject(p) => VtableObject(p),
-            VtableBuiltin(no) => VtableBuiltin(no.map_move_nested(op)),
-        }
-    }
-}
-
-impl<'tcx, N> VtableImplData<'tcx, N> {
-    pub fn iter_nested(&self) -> Iter<N> {
-        self.nested.iter()
-    }
-
-    pub fn map_nested<M, F>(&self, op: F) -> VtableImplData<'tcx, M> where
-        F: FnMut(&N) -> M,
-    {
-        VtableImplData {
-            impl_def_id: self.impl_def_id,
-            substs: self.substs.clone(),
-            nested: self.nested.map(op)
+            VtableImpl(i) => i.nested,
+            VtableParam(n) => n,
+            VtableBuiltin(i) => i.nested,
+            VtableDefaultImpl(d) => d.nested,
+            VtableClosure(c) => c.nested,
+            VtableObject(_) | VtableFnPointer(..) => vec![]
         }
     }
 
-    pub fn map_move_nested<M, F>(self, op: F) -> VtableImplData<'tcx, M> where
-        F: FnMut(N) -> M,
-    {
-        let VtableImplData { impl_def_id, substs, nested } = self;
-        VtableImplData {
-            impl_def_id: impl_def_id,
-            substs: substs,
-            nested: nested.map_move(op)
-        }
-    }
-}
-
-impl<N> VtableDefaultImplData<N> {
-    pub fn iter_nested(&self) -> Iter<N> {
-        self.nested.iter()
-    }
-
-    pub fn map_nested<M, F>(&self, op: F) -> VtableDefaultImplData<M> where
-        F: FnMut(&N) -> M,
-    {
-        VtableDefaultImplData {
-            trait_def_id: self.trait_def_id,
-            nested: self.nested.iter().map(op).collect()
-        }
-    }
-
-    pub fn map_move_nested<M, F>(self, op: F) -> VtableDefaultImplData<M> where
-        F: FnMut(N) -> M,
-    {
-        let VtableDefaultImplData { trait_def_id, nested } = self;
-        VtableDefaultImplData {
-            trait_def_id: trait_def_id,
-            nested: nested.into_iter().map(op).collect()
-        }
-    }
-}
-
-impl<N> VtableBuiltinData<N> {
-    pub fn iter_nested(&self) -> Iter<N> {
-        self.nested.iter()
-    }
-
-    pub fn map_nested<M, F>(&self, op: F) -> VtableBuiltinData<M> where F: FnMut(&N) -> M {
-        VtableBuiltinData {
-            nested: self.nested.map(op)
-        }
-    }
-
-    pub fn map_move_nested<M, F>(self, op: F) -> VtableBuiltinData<M> where
-        F: FnMut(N) -> M,
-    {
-        VtableBuiltinData {
-            nested: self.nested.map_move(op)
+    pub fn map<M, F>(self, f: F) -> Vtable<'tcx, M> where F: FnMut(N) -> M {
+        match self {
+            VtableImpl(i) => VtableImpl(VtableImplData {
+                impl_def_id: i.impl_def_id,
+                substs: i.substs,
+                nested: i.nested.into_iter().map(f).collect()
+            }),
+            VtableParam(n) => VtableParam(n.into_iter().map(f).collect()),
+            VtableBuiltin(i) => VtableBuiltin(VtableBuiltinData {
+                nested: i.nested.into_iter().map(f).collect()
+            }),
+            VtableObject(o) => VtableObject(o),
+            VtableDefaultImpl(d) => VtableDefaultImpl(VtableDefaultImplData {
+                trait_def_id: d.trait_def_id,
+                nested: d.nested.into_iter().map(f).collect()
+            }),
+            VtableFnPointer(f) => VtableFnPointer(f),
+            VtableClosure(c) => VtableClosure(VtableClosureData {
+                closure_def_id: c.closure_def_id,
+                substs: c.substs,
+                nested: c.nested.into_iter().map(f).collect(),
+            })
         }
     }
 }

@@ -55,9 +55,7 @@
 //!     between the two sources. (Also note that, on some systems e.g. FreeBSD, both `/dev/random`
 //!     and `/dev/urandom` may block once if the CSPRNG has not seeded yet.)
 
-#![unstable(feature = "rand")]
-
-use prelude::v1::*;
+#![unstable(feature = "rand", issue = "0")]
 
 use cell::RefCell;
 use io;
@@ -95,7 +93,7 @@ impl StdRng {
     /// appropriate.
     ///
     /// Reading the randomness from the OS may fail, and any error is
-    /// propagated via the `IoResult` return value.
+    /// propagated via the `io::Result` return value.
     pub fn new() -> io::Result<StdRng> {
         OsRng::new().map(|mut r| StdRng { rng: r.gen() })
     }

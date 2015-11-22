@@ -9,49 +9,49 @@
 // except according to those terms.
 
 pub use self::Def::*;
-pub use self::MethodProvenance::*;
 
+use middle::def_id::DefId;
 use middle::privacy::LastPrivate;
 use middle::subst::ParamSpace;
 use util::nodemap::NodeMap;
 use syntax::ast;
-use syntax::ast_util::local_def;
-
-use std::cell::RefCell;
+use rustc_front::hir;
 
 #[derive(Clone, Copy, PartialEq, Eq, RustcEncodable, RustcDecodable, Hash, Debug)]
 pub enum Def {
-    DefFn(ast::DefId, bool /* is_ctor */),
-    DefSelfTy(Option<ast::DefId>,                    // trait id
+    DefFn(DefId, bool /* is_ctor */),
+    DefSelfTy(Option<DefId>,                    // trait id
               Option<(ast::NodeId, ast::NodeId)>),   // (impl id, self type id)
-    DefMod(ast::DefId),
-    DefForeignMod(ast::DefId),
-    DefStatic(ast::DefId, bool /* is_mutbl */),
-    DefConst(ast::DefId),
-    DefAssociatedConst(ast::DefId /* const */, MethodProvenance),
-    DefLocal(ast::NodeId),
-    DefVariant(ast::DefId /* enum */, ast::DefId /* variant */, bool /* is_structure */),
-    DefTy(ast::DefId, bool /* is_enum */),
-    DefAssociatedTy(ast::DefId /* trait */, ast::DefId),
-    DefTrait(ast::DefId),
-    DefPrimTy(ast::PrimTy),
-    DefTyParam(ParamSpace, u32, ast::DefId, ast::Name),
-    DefUse(ast::DefId),
-    DefUpvar(ast::NodeId,  // id of closed over local
+    DefMod(DefId),
+    DefForeignMod(DefId),
+    DefStatic(DefId, bool /* is_mutbl */),
+    DefConst(DefId),
+    DefAssociatedConst(DefId),
+    DefLocal(DefId, // def id of variable
+             ast::NodeId), // node id of variable
+    DefVariant(DefId /* enum */, DefId /* variant */, bool /* is_structure */),
+    DefTy(DefId, bool /* is_enum */),
+    DefAssociatedTy(DefId /* trait */, DefId),
+    DefTrait(DefId),
+    DefPrimTy(hir::PrimTy),
+    DefTyParam(ParamSpace, u32, DefId, ast::Name),
+    DefUse(DefId),
+    DefUpvar(DefId,        // def id of closed over local
+             ast::NodeId,  // node id of closed over local
+             usize,        // index in the freevars list of the closure
              ast::NodeId), // expr node that creates the closure
 
-    /// Note that if it's a tuple struct's definition, the node id of the ast::DefId
-    /// may either refer to the item definition's id or the StructDef.ctor_id.
+    /// Note that if it's a tuple struct's definition, the node id of the DefId
+    /// may either refer to the item definition's id or the VariantData.ctor_id.
     ///
     /// The cases that I have encountered so far are (this is not exhaustive):
     /// - If it's a ty_path referring to some tuple struct, then DefMap maps
     ///   it to a def whose id is the item definition's id.
     /// - If it's an ExprPath referring to some tuple struct, then DefMap maps
-    ///   it to a def whose id is the StructDef.ctor_id.
-    DefStruct(ast::DefId),
-    DefRegion(ast::NodeId),
+    ///   it to a def whose id is the VariantData.ctor_id.
+    DefStruct(DefId),
     DefLabel(ast::NodeId),
-    DefMethod(ast::DefId /* method */, MethodProvenance),
+    DefMethod(DefId),
 }
 
 /// The result of resolving a path.
@@ -84,7 +84,7 @@ impl PathResolution {
     }
 
     /// Get the DefId, if fully resolved, otherwise panic.
-    pub fn def_id(&self) -> ast::DefId {
+    pub fn def_id(&self) -> DefId {
         self.full_def().def_id()
     }
 
@@ -101,7 +101,7 @@ impl PathResolution {
 }
 
 // Definition mapping
-pub type DefMap = RefCell<NodeMap<PathResolution>>;
+pub type DefMap = NodeMap<PathResolution>;
 // This is the replacement export map. It maps a module to all of the exports
 // within.
 pub type ExportMap = NodeMap<Vec<Export>>;
@@ -109,56 +109,46 @@ pub type ExportMap = NodeMap<Vec<Export>>;
 #[derive(Copy, Clone)]
 pub struct Export {
     pub name: ast::Name,    // The name of the target.
-    pub def_id: ast::DefId, // The definition of the target.
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, RustcEncodable, RustcDecodable, Hash, Debug)]
-pub enum MethodProvenance {
-    FromTrait(ast::DefId),
-    FromImpl(ast::DefId),
-}
-
-impl MethodProvenance {
-    pub fn map<F>(self, f: F) -> MethodProvenance where
-        F: FnOnce(ast::DefId) -> ast::DefId,
-    {
-        match self {
-            FromTrait(did) => FromTrait(f(did)),
-            FromImpl(did) => FromImpl(f(did))
-        }
-    }
+    pub def_id: DefId, // The definition of the target.
 }
 
 impl Def {
-    pub fn local_node_id(&self) -> ast::NodeId {
-        let def_id = self.def_id();
-        assert_eq!(def_id.krate, ast::LOCAL_CRATE);
-        def_id.node
+    pub fn var_id(&self) -> ast::NodeId {
+        match *self {
+            DefLocal(_, id) |
+            DefUpvar(_, id, _, _) => {
+                id
+            }
+
+            DefFn(..) | DefMod(..) | DefForeignMod(..) | DefStatic(..) |
+            DefVariant(..) | DefTy(..) | DefAssociatedTy(..) |
+            DefTyParam(..) | DefUse(..) | DefStruct(..) | DefTrait(..) |
+            DefMethod(..) | DefConst(..) | DefAssociatedConst(..) |
+            DefPrimTy(..) | DefLabel(..) | DefSelfTy(..) => {
+                panic!("attempted .def_id() on invalid {:?}", self)
+            }
+        }
     }
 
-    pub fn def_id(&self) -> ast::DefId {
+    pub fn def_id(&self) -> DefId {
         match *self {
             DefFn(id, _) | DefMod(id) | DefForeignMod(id) | DefStatic(id, _) |
             DefVariant(_, id, _) | DefTy(id, _) | DefAssociatedTy(_, id) |
             DefTyParam(_, _, id, _) | DefUse(id) | DefStruct(id) | DefTrait(id) |
-            DefMethod(id, _) | DefConst(id) | DefAssociatedConst(id, _) |
-            DefSelfTy(Some(id), None)=> {
+            DefMethod(id) | DefConst(id) | DefAssociatedConst(id) |
+            DefLocal(id, _) | DefUpvar(id, _, _, _) => {
                 id
             }
-            DefLocal(id) |
-            DefUpvar(id, _) |
-            DefRegion(id) |
-            DefLabel(id)  |
-            DefSelfTy(_, Some((_, id))) => {
-                local_def(id)
-            }
 
-            DefPrimTy(_) => panic!("attempted .def_id() on DefPrimTy"),
-            DefSelfTy(..) => panic!("attempted .def_id() on invalid DefSelfTy"),
+            DefLabel(..)  |
+            DefPrimTy(..) |
+            DefSelfTy(..) => {
+                panic!("attempted .def_id() on invalid def: {:?}", self)
+            }
         }
     }
 
-    pub fn variant_def_ids(&self) -> Option<(ast::DefId, ast::DefId)> {
+    pub fn variant_def_ids(&self) -> Option<(DefId, DefId)> {
         match *self {
             DefVariant(enum_id, var_id, _) => {
                 Some((enum_id, var_id))

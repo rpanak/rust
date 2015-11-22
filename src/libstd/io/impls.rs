@@ -8,8 +8,6 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use core::prelude::*;
-
 use boxed::Box;
 use cmp;
 use io::{self, SeekFrom, Read, Write, Seek, BufRead, Error, ErrorKind};
@@ -37,6 +35,11 @@ impl<'a, R: Read + ?Sized> Read for &'a mut R {
     #[inline]
     fn read_to_string(&mut self, buf: &mut String) -> io::Result<usize> {
         (**self).read_to_string(buf)
+    }
+
+    #[inline]
+    fn read_exact(&mut self, buf: &mut [u8]) -> io::Result<()> {
+        (**self).read_exact(buf)
     }
 }
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -97,6 +100,11 @@ impl<R: Read + ?Sized> Read for Box<R> {
     fn read_to_string(&mut self, buf: &mut String) -> io::Result<usize> {
         (**self).read_to_string(buf)
     }
+
+    #[inline]
+    fn read_exact(&mut self, buf: &mut [u8]) -> io::Result<()> {
+        (**self).read_exact(buf)
+    }
 }
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<W: Write + ?Sized> Write for Box<W> {
@@ -152,6 +160,17 @@ impl<'a> Read for &'a [u8] {
         slice::bytes::copy_memory(a, buf);
         *self = b;
         Ok(amt)
+    }
+
+    #[inline]
+    fn read_exact(&mut self, buf: &mut [u8]) -> io::Result<()> {
+        if buf.len() > self.len() {
+            return Err(Error::new(ErrorKind::UnexpectedEOF, "failed to fill whole buffer"));
+        }
+        let (a, b) = self.split_at(buf.len());
+        slice::bytes::copy_memory(a, buf);
+        *self = b;
+        Ok(())
     }
 }
 
@@ -219,7 +238,7 @@ mod tests {
 
         b.iter(|| {
             let mut rd = &buf[..];
-            for _ in (0 .. 8) {
+            for _ in 0..8 {
                 let _ = rd.read(&mut dst);
                 test::black_box(&dst);
             }
@@ -233,7 +252,7 @@ mod tests {
 
         b.iter(|| {
             let mut wr = &mut buf[..];
-            for _ in (0 .. 8) {
+            for _ in 0..8 {
                 let _ = wr.write_all(&src);
                 test::black_box(&wr);
             }
@@ -247,7 +266,7 @@ mod tests {
 
         b.iter(|| {
             let mut rd = &buf[..];
-            for _ in (0 .. 8) {
+            for _ in 0..8 {
                 let _ = rd.read(&mut dst);
                 test::black_box(&dst);
             }
@@ -261,7 +280,7 @@ mod tests {
 
         b.iter(|| {
             let mut wr = &mut buf[..];
-            for _ in (0 .. 8) {
+            for _ in 0..8 {
                 let _ = wr.write_all(&src);
                 test::black_box(&wr);
             }

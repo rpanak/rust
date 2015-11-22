@@ -55,8 +55,8 @@ pub struct TocBuilder {
     /// strictly increasing (i.e. chain[0].level < chain[1].level <
     /// ...) with each entry being the most recent occurrence of a
     /// heading with that level (it doesn't include the most recent
-    /// occurrences of every level, just, if *is* in `chain` then is is
-    /// the most recent one).
+    /// occurrences of every level, just, if it *is* in `chain` then
+    /// it is the most recent one).
     ///
     /// We also have `chain[0].level <= top_level.entries[last]`.
     chain: Vec<TocEntry>
@@ -145,7 +145,7 @@ impl TocBuilder {
                     (0, &self.top_level)
                 }
                 Some(entry) => {
-                    sec_number = String::from_str(&entry.sec_number);
+                    sec_number = entry.sec_number.clone();
                     sec_number.push_str(".");
                     (entry.level, &entry.children)
                 }

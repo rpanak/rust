@@ -52,9 +52,9 @@ pub fn is_doc_comment(s: &str) -> bool {
 pub fn doc_comment_style(comment: &str) -> ast::AttrStyle {
     assert!(is_doc_comment(comment));
     if comment.starts_with("//!") || comment.starts_with("/*!") {
-        ast::AttrInner
+        ast::AttrStyle::Inner
     } else {
-        ast::AttrOuter
+        ast::AttrStyle::Outer
     }
 }
 
@@ -132,14 +132,14 @@ pub fn strip_doc_comment_decoration(comment: &str) -> String {
 
     if comment.starts_with("/*") {
         let lines = comment[3..comment.len() - 2]
-            .lines_any()
+            .lines()
             .map(|s| s.to_string())
             .collect::<Vec<String> >();
 
         let lines = vertical_trim(lines);
         let lines = horizontal_trim(lines);
 
-        return lines.connect("\n");
+        return lines.join("\n");
     }
 
     panic!("not a doc-comment: {}", comment);
@@ -270,7 +270,7 @@ fn read_block_comment(rdr: &mut StringReader,
         while level > 0 {
             debug!("=== block comment level {}", level);
             if rdr.is_eof() {
-                rdr.fatal("unterminated block comment");
+                panic!(rdr.fatal("unterminated block comment"));
             }
             if rdr.curr_is('\n') {
                 trim_whitespace_prefix_and_push_line(&mut lines,

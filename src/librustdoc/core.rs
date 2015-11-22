@@ -10,15 +10,19 @@
 pub use self::MaybeTyped::*;
 
 use rustc_lint;
-use rustc_driver::driver;
+use rustc_driver::{driver, target_features};
 use rustc::session::{self, config};
-use rustc::session::config::UnstableFeatures;
-use rustc::middle::{privacy, ty};
+use rustc::middle::def_id::DefId;
+use rustc::middle::privacy::AccessLevels;
+use rustc::middle::ty;
+use rustc::front::map as hir_map;
 use rustc::lint;
 use rustc_trans::back::link;
 use rustc_resolve as resolve;
+use rustc_front::lowering::{lower_crate, LoweringContext};
 
-use syntax::{ast, ast_map, codemap, diagnostic};
+use syntax::{ast, codemap, diagnostic};
+use syntax::feature_gate::UnstableFeatures;
 
 use std::cell::{RefCell, Cell};
 use std::collections::{HashMap, HashSet};
@@ -31,37 +35,37 @@ pub use rustc::session::config::Input;
 pub use rustc::session::search_paths::SearchPaths;
 
 /// Are we generating documentation (`Typed`) or tests (`NotTyped`)?
-pub enum MaybeTyped<'tcx> {
-    Typed(ty::ctxt<'tcx>),
-    NotTyped(session::Session)
+pub enum MaybeTyped<'a, 'tcx: 'a> {
+    Typed(&'a ty::ctxt<'tcx>),
+    NotTyped(&'a session::Session)
 }
 
-pub type ExternalPaths = RefCell<Option<HashMap<ast::DefId,
+pub type ExternalPaths = RefCell<Option<HashMap<DefId,
                                                 (Vec<String>, clean::TypeKind)>>>;
 
-pub struct DocContext<'tcx> {
-    pub krate: &'tcx ast::Crate,
-    pub maybe_typed: MaybeTyped<'tcx>,
+pub struct DocContext<'a, 'tcx: 'a> {
+    pub map: &'a hir_map::Map<'tcx>,
+    pub maybe_typed: MaybeTyped<'a, 'tcx>,
     pub input: Input,
     pub external_paths: ExternalPaths,
-    pub external_traits: RefCell<Option<HashMap<ast::DefId, clean::Trait>>>,
-    pub external_typarams: RefCell<Option<HashMap<ast::DefId, String>>>,
-    pub inlined: RefCell<Option<HashSet<ast::DefId>>>,
+    pub external_traits: RefCell<Option<HashMap<DefId, clean::Trait>>>,
+    pub external_typarams: RefCell<Option<HashMap<DefId, String>>>,
+    pub inlined: RefCell<Option<HashSet<DefId>>>,
     pub populated_crate_impls: RefCell<HashSet<ast::CrateNum>>,
-    pub deref_trait_did: Cell<Option<ast::DefId>>,
+    pub deref_trait_did: Cell<Option<DefId>>,
 }
 
-impl<'tcx> DocContext<'tcx> {
+impl<'b, 'tcx> DocContext<'b, 'tcx> {
     pub fn sess<'a>(&'a self) -> &'a session::Session {
         match self.maybe_typed {
-            Typed(ref tcx) => &tcx.sess,
+            Typed(tcx) => &tcx.sess,
             NotTyped(ref sess) => sess
         }
     }
 
     pub fn tcx_opt<'a>(&'a self) -> Option<&'a ty::ctxt<'tcx>> {
         match self.maybe_typed {
-            Typed(ref tcx) => Some(tcx),
+            Typed(tcx) => Some(tcx),
             NotTyped(_) => None
         }
     }
@@ -73,12 +77,11 @@ impl<'tcx> DocContext<'tcx> {
 }
 
 pub struct CrateAnalysis {
-    pub exported_items: privacy::ExportedItems,
-    pub public_items: privacy::PublicItems,
+    pub access_levels: AccessLevels<DefId>,
     pub external_paths: ExternalPaths,
-    pub external_typarams: RefCell<Option<HashMap<ast::DefId, String>>>,
-    pub inlined: RefCell<Option<HashSet<ast::DefId>>>,
-    pub deref_trait_did: Option<ast::DefId>,
+    pub external_typarams: RefCell<Option<HashMap<DefId, String>>>,
+    pub inlined: RefCell<Option<HashSet<DefId>>>,
+    pub deref_trait_did: Option<DefId>,
 }
 
 pub type Externs = HashMap<String, Vec<String>>;
@@ -101,11 +104,12 @@ pub fn run_core(search_paths: SearchPaths, cfgs: Vec<String>, externs: Externs,
         search_paths: search_paths,
         crate_types: vec!(config::CrateTypeRlib),
         lint_opts: vec!((warning_lint, lint::Allow)),
+        lint_cap: Some(lint::Allow),
         externs: externs,
         target_triple: triple.unwrap_or(config::host_triple().to_string()),
         cfg: config::parse_cfgspecs(cfgs),
         // Ensure that rustdoc works even if rustc is feature-staged
-        unstable_features: UnstableFeatures::Default,
+        unstable_features: UnstableFeatures::Allow,
         ..config::basic_options().clone()
     };
 
@@ -118,7 +122,8 @@ pub fn run_core(search_paths: SearchPaths, cfgs: Vec<String>, externs: Externs,
                                        span_diagnostic_handler);
     rustc_lint::register_builtins(&mut sess.lint_store.borrow_mut(), Some(&sess));
 
-    let cfg = config::build_configuration(&sess);
+    let mut cfg = config::build_configuration(&sess);
+    target_features::add_configuration(&mut cfg, &sess);
 
     let krate = driver::phase_1_parse_input(&sess, cfg, &input);
 
@@ -128,52 +133,63 @@ pub fn run_core(search_paths: SearchPaths, cfgs: Vec<String>, externs: Externs,
     let krate = driver::phase_2_configure_and_expand(&sess, krate, &name, None)
                     .expect("phase_2_configure_and_expand aborted in rustdoc!");
 
-    let mut forest = ast_map::Forest::new(krate);
+    let krate = driver::assign_node_ids(&sess, krate);
+    // Lower ast -> hir.
+    let lcx = LoweringContext::new(&sess, Some(&krate));
+    let mut hir_forest = hir_map::Forest::new(lower_crate(&lcx, &krate));
     let arenas = ty::CtxtArenas::new();
-    let ast_map = driver::assign_node_ids_and_map(&sess, &mut forest);
+    let hir_map = driver::make_map(&sess, &mut hir_forest);
 
-    let ty::CrateAnalysis {
-        exported_items, public_items, ty_cx, ..
-    } = driver::phase_3_run_analysis_passes(sess,
-                                            ast_map,
-                                            &arenas,
-                                            name,
-                                            resolve::MakeGlobMap::No);
+    driver::phase_3_run_analysis_passes(&sess,
+                                        hir_map,
+                                        &arenas,
+                                        &name,
+                                        resolve::MakeGlobMap::No,
+                                        |tcx, _, analysis| {
+        let ty::CrateAnalysis { access_levels, .. } = analysis;
 
-    let ctxt = DocContext {
-        krate: ty_cx.map.krate(),
-        maybe_typed: Typed(ty_cx),
-        input: input,
-        external_traits: RefCell::new(Some(HashMap::new())),
-        external_typarams: RefCell::new(Some(HashMap::new())),
-        external_paths: RefCell::new(Some(HashMap::new())),
-        inlined: RefCell::new(Some(HashSet::new())),
-        populated_crate_impls: RefCell::new(HashSet::new()),
-        deref_trait_did: Cell::new(None),
-    };
-    debug!("crate: {:?}", ctxt.krate);
+        // Convert from a NodeId set to a DefId set since we don't always have easy access
+        // to the map from defid -> nodeid
+        let access_levels = AccessLevels {
+            map: access_levels.map.into_iter()
+                                  .map(|(k, v)| (tcx.map.local_def_id(k), v))
+                                  .collect()
+        };
 
-    let mut analysis = CrateAnalysis {
-        exported_items: exported_items,
-        public_items: public_items,
-        external_paths: RefCell::new(None),
-        external_typarams: RefCell::new(None),
-        inlined: RefCell::new(None),
-        deref_trait_did: None,
-    };
+        let ctxt = DocContext {
+            map: &tcx.map,
+            maybe_typed: Typed(tcx),
+            input: input,
+            external_traits: RefCell::new(Some(HashMap::new())),
+            external_typarams: RefCell::new(Some(HashMap::new())),
+            external_paths: RefCell::new(Some(HashMap::new())),
+            inlined: RefCell::new(Some(HashSet::new())),
+            populated_crate_impls: RefCell::new(HashSet::new()),
+            deref_trait_did: Cell::new(None),
+        };
+        debug!("crate: {:?}", ctxt.map.krate());
 
-    let krate = {
-        let mut v = RustdocVisitor::new(&ctxt, Some(&analysis));
-        v.visit(ctxt.krate);
-        v.clean(&ctxt)
-    };
+        let mut analysis = CrateAnalysis {
+            access_levels: access_levels,
+            external_paths: RefCell::new(None),
+            external_typarams: RefCell::new(None),
+            inlined: RefCell::new(None),
+            deref_trait_did: None,
+        };
 
-    let external_paths = ctxt.external_paths.borrow_mut().take();
-    *analysis.external_paths.borrow_mut() = external_paths;
-    let map = ctxt.external_typarams.borrow_mut().take();
-    *analysis.external_typarams.borrow_mut() = map;
-    let map = ctxt.inlined.borrow_mut().take();
-    *analysis.inlined.borrow_mut() = map;
-    analysis.deref_trait_did = ctxt.deref_trait_did.get();
-    (krate, analysis)
+        let krate = {
+            let mut v = RustdocVisitor::new(&ctxt, Some(&analysis));
+            v.visit(ctxt.map.krate());
+            v.clean(&ctxt)
+        };
+
+        let external_paths = ctxt.external_paths.borrow_mut().take();
+        *analysis.external_paths.borrow_mut() = external_paths;
+        let map = ctxt.external_typarams.borrow_mut().take();
+        *analysis.external_typarams.borrow_mut() = map;
+        let map = ctxt.inlined.borrow_mut().take();
+        *analysis.inlined.borrow_mut() = map;
+        analysis.deref_trait_did = ctxt.deref_trait_did.get();
+        (krate, analysis)
+    })
 }

@@ -8,13 +8,10 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-//! Operations and constants for pointer-sized unsigned integers (`usize` type)
+//! The pointer-sized unsigned integer type.
 //!
-//! This type was recently added to replace `uint`. The rollout of the
-//! new type will gradually take place over the alpha cycle along with
-//! the development of clearer conventions around integer types.
+//! *[See also the `usize` primitive type](../primitive.usize.html).*
 
 #![stable(feature = "rust1", since = "1.0.0")]
-#![doc(primitive = "usize")]
 
 uint_module! { usize, isize, ::isize::BITS }

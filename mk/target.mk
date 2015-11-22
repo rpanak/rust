@@ -13,6 +13,10 @@
 # this exists can be found on issue #2400
 export CFG_COMPILER_HOST_TRIPLE
 
+# Used as defaults for the runtime ar and cc tools
+export CFG_DEFAULT_LINKER
+export CFG_DEFAULT_AR
+
 # The standard libraries should be held up to a higher standard than any old
 # code, make sure that these common warnings are denied by default. These can
 # be overridden during development temporarily. For stage0, we allow warnings
@@ -53,8 +57,7 @@ $(foreach host,$(CFG_HOST), \
 #   1. The immediate dependencies are the rust source files
 #   2. Each rust crate dependency is listed (based on their stamp files),
 #      as well as all native dependencies (listed in RT_OUTPUT_DIR)
-#   3. The stage (n-1) compiler is required through the TSREQ dependency, along
-#      with the morestack library
+#   3. The stage (n-1) compiler is required through the TSREQ dependency
 #   4. When actually executing the rule, the first thing we do is to clean out
 #      old libs and rlibs via the REMOVE_ALL_OLD_GLOB_MATCHES macro
 #   5. Finally, we get around to building the actual crate. It's just one
@@ -83,13 +86,16 @@ $$(TLIB$(1)_T_$(2)_H_$(3))/stamp.$(4): \
 	    $$(dir $$@)$$(call CFG_LIB_GLOB_$(2),$(4)))
 	$$(call REMOVE_ALL_OLD_GLOB_MATCHES, \
 	    $$(dir $$@)$$(call CFG_RLIB_GLOB,$(4)))
-	$(Q)CFG_LLVM_LINKAGE_FILE=$$(LLVM_LINKAGE_PATH_$(3)) \
+	$(Q)CFG_LLVM_LINKAGE_FILE=$$(LLVM_LINKAGE_PATH_$(2)) \
 	    $$(subst @,,$$(STAGE$(1)_T_$(2)_H_$(3))) \
 		$$(RUST_LIB_FLAGS_ST$(1)) \
 		-L "$$(RT_OUTPUT_DIR_$(2))" \
 		$$(LLVM_LIBDIR_RUSTFLAGS_$(2)) \
 		$$(LLVM_STDCPP_RUSTFLAGS_$(2)) \
 		$$(RUSTFLAGS_$(4)) \
+		$$(RUSTFLAGS$(1)_$(4)) \
+		$$(RUSTFLAGS$(1)_$(4)_T_$(2)) \
+		$$(STDCPP_LIBDIR_RUSTFLAGS_$(2)) \
 		--out-dir $$(@D) \
 		-C extra-filename=-$$(CFG_FILENAME_EXTRA) \
 		$$<
@@ -123,7 +129,35 @@ $$(TBIN$(1)_T_$(2)_H_$(3))/$(4)$$(X_$(2)): \
 		$$(TSREQ$(1)_T_$(2)_H_$(3)) \
 		| $$(TBIN$(1)_T_$(2)_H_$(3))/
 	@$$(call E, rustc: $$@)
-	$$(STAGE$(1)_T_$(2)_H_$(3)) -o $$@ $$< --cfg $(4)
+	$$(STAGE$(1)_T_$(2)_H_$(3)) \
+		$$(STDCPP_LIBDIR_RUSTFLAGS_$(2)) \
+		-o $$@ $$< --cfg $(4)
+
+endef
+
+# Macro for building runtime startup/shutdown object files;
+# these are Rust's equivalent of crti.o, crtn.o
+#
+# $(1) - stage
+# $(2) - target triple
+# $(3) - host triple
+# $(4) - object basename
+define TARGET_RUSTRT_STARTUP_OBJ
+
+$$(TLIB$(1)_T_$(2)_H_$(3))/$(4).o: \
+		$(S)src/rtstartup/$(4).rs \
+		$$(TLIB$(1)_T_$(2)_H_$(3))/stamp.core \
+		$$(HSREQ$(1)_T_$(2)_H_$(3)) \
+		| $$(TBIN$(1)_T_$(2)_H_$(3))/
+	@$$(call E, rustc: $$@)
+	$$(STAGE$(1)_T_$(2)_H_$(3)) --emit=obj -o $$@ $$<
+
+# Add dependencies on Rust startup objects to all crates that depend on core.
+# This ensures that they are built after core (since they depend on it),
+# but before everything else (since they are needed for linking dylib crates).
+$$(foreach crate, $$(TARGET_CRATES), \
+	$$(if $$(findstring core,$$(DEPS_$$(crate))), \
+		$$(TLIB$(1)_T_$(2)_H_$(3))/stamp.$$(crate))) : $$(TLIB$(1)_T_$(2)_H_$(3))/$(4).o
 
 endef
 
@@ -138,9 +172,6 @@ endef
 SNAPSHOT_RUSTC_POST_CLEANUP=$(HBIN0_H_$(CFG_BUILD))/rustc$(X_$(CFG_BUILD))
 
 define TARGET_HOST_RULES
-
-$$(TBIN$(1)_T_$(2)_H_$(3))/:
-	mkdir -p $$@
 
 $$(TLIB$(1)_T_$(2)_H_$(3))/:
 	mkdir -p $$@
@@ -172,3 +203,9 @@ $(foreach host,$(CFG_HOST), \
   $(foreach stage,$(STAGES), \
    $(foreach tool,$(TOOLS), \
     $(eval $(call TARGET_TOOL,$(stage),$(target),$(host),$(tool)))))))
+
+$(foreach host,$(CFG_HOST), \
+ $(foreach target,$(CFG_TARGET), \
+  $(foreach stage,$(STAGES), \
+   $(foreach obj,rsbegin rsend, \
+    $(eval $(call TARGET_RUSTRT_STARTUP_OBJ,$(stage),$(target),$(host),$(obj)))))))

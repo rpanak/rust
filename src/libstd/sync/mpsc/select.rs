@@ -27,7 +27,8 @@
 //! # Examples
 //!
 //! ```rust
-//! # #![feature(std_misc)]
+//! #![feature(mpsc_select)]
+//!
 //! use std::sync::mpsc::channel;
 //!
 //! let (tx1, rx1) = channel();
@@ -47,20 +48,18 @@
 //! ```
 
 #![allow(dead_code)]
-#![unstable(feature = "std_misc",
+#![unstable(feature = "mpsc_select",
             reason = "This implementation, while likely sufficient, is unsafe and \
                       likely to be error prone. At some point in the future this \
                       module will likely be replaced, and it is currently \
                       unknown how much API breakage that will cause. The ability \
                       to select over a number of channels will remain forever, \
-                      but no guarantees beyond this are being made")]
+                      but no guarantees beyond this are being made",
+            issue = "27800")]
 
-
-use core::prelude::*;
 
 use core::cell::{Cell, UnsafeCell};
 use core::marker;
-use core::mem;
 use core::ptr;
 use core::usize;
 
@@ -124,7 +123,8 @@ impl Select {
     /// # Examples
     ///
     /// ```
-    /// # #![feature(std_misc)]
+    /// #![feature(mpsc_select)]
+    ///
     /// use std::sync::mpsc::Select;
     ///
     /// let select = Select::new();
@@ -278,7 +278,7 @@ impl<'rx, T: Send> Handle<'rx, T> {
     pub unsafe fn add(&mut self) {
         if self.added { return }
         let selector = &mut *self.selector;
-        let me: *mut Handle<'static, ()> = mem::transmute(&*self);
+        let me = self as *mut Handle<'rx, T> as *mut Handle<'static, ()>;
 
         if selector.head.is_null() {
             selector.head = me;
@@ -299,7 +299,7 @@ impl<'rx, T: Send> Handle<'rx, T> {
         if !self.added { return }
 
         let selector = &mut *self.selector;
-        let me: *mut Handle<'static, ()> = mem::transmute(&*self);
+        let me = self as *mut Handle<'rx, T> as *mut Handle<'static, ()>;
 
         if self.prev.is_null() {
             assert_eq!(selector.head, me);

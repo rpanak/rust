@@ -10,13 +10,26 @@
 
 use prelude::v1::*;
 
-use sync::atomic::{AtomicUsize, Ordering, ATOMIC_USIZE_INIT};
+use sync::atomic::{AtomicUsize, Ordering};
 use sync::{mutex, MutexGuard, PoisonError};
 use sys_common::condvar as sys;
 use sys_common::mutex as sys_mutex;
 use sys_common::poison::{self, LockResult};
-use sys::time::SteadyTime;
-use time::Duration;
+use time::{Instant, Duration};
+
+/// A type indicating whether a timed wait on a condition variable returned
+/// due to a time out or not.
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
+#[stable(feature = "wait_timeout", since = "1.5.0")]
+pub struct WaitTimeoutResult(bool);
+
+impl WaitTimeoutResult {
+    /// Returns whether the wait was known to have timed out.
+    #[stable(feature = "wait_timeout", since = "1.5.0")]
+    pub fn timed_out(&self) -> bool {
+        self.0
+    }
+}
 
 /// A Condition Variable
 ///
@@ -69,13 +82,15 @@ pub struct Condvar { inner: Box<StaticCondvar> }
 /// # Examples
 ///
 /// ```
-/// # #![feature(static_condvar)]
+/// #![feature(static_condvar)]
+///
 /// use std::sync::{StaticCondvar, CONDVAR_INIT};
 ///
 /// static CVAR: StaticCondvar = CONDVAR_INIT;
 /// ```
 #[unstable(feature = "static_condvar",
-           reason = "may be merged with Condvar in the future")]
+           reason = "may be merged with Condvar in the future",
+           issue = "27717")]
 pub struct StaticCondvar {
     inner: sys::Condvar,
     mutex: AtomicUsize,
@@ -83,11 +98,9 @@ pub struct StaticCondvar {
 
 /// Constant initializer for a statically allocated condition variable.
 #[unstable(feature = "static_condvar",
-           reason = "may be merged with Condvar in the future")]
-pub const CONDVAR_INIT: StaticCondvar = StaticCondvar {
-    inner: sys::CONDVAR_INIT,
-    mutex: ATOMIC_USIZE_INIT,
-};
+           reason = "may be merged with Condvar in the future",
+           issue = "27717")]
+pub const CONDVAR_INIT: StaticCondvar = StaticCondvar::new();
 
 impl Condvar {
     /// Creates a new condition variable which is ready to be waited on and
@@ -96,7 +109,7 @@ impl Condvar {
     pub fn new() -> Condvar {
         Condvar {
             inner: box StaticCondvar {
-                inner: unsafe { sys::Condvar::new() },
+                inner: sys::Condvar::new(),
                 mutex: AtomicUsize::new(0),
             }
         }
@@ -153,6 +166,8 @@ impl Condvar {
     /// Like `wait`, the lock specified will be re-acquired when this function
     /// returns, regardless of whether the timeout elapsed or not.
     #[stable(feature = "rust1", since = "1.0.0")]
+    #[deprecated(since = "1.6.0", reason = "replaced by `std::sync::Condvar::wait_timeout`")]
+    #[allow(deprecated)]
     pub fn wait_timeout_ms<'a, T>(&self, guard: MutexGuard<'a, T>, ms: u32)
                                   -> LockResult<(MutexGuard<'a, T>, bool)> {
         unsafe {
@@ -170,15 +185,15 @@ impl Condvar {
     /// preemption or platform differences that may not cause the maximum
     /// amount of time waited to be precisely `dur`.
     ///
-    /// The returned boolean is `false` only if the timeout is known
-    /// to have elapsed.
+    /// The returned `WaitTimeoutResult` value indicates if the timeout is
+    /// known to have elapsed.
     ///
     /// Like `wait`, the lock specified will be re-acquired when this function
     /// returns, regardless of whether the timeout elapsed or not.
-    #[unstable(feature = "wait_timeout", reason = "waiting for Duration")]
+    #[stable(feature = "wait_timeout", since = "1.5.0")]
     pub fn wait_timeout<'a, T>(&self, guard: MutexGuard<'a, T>,
                                dur: Duration)
-                               -> LockResult<(MutexGuard<'a, T>, bool)> {
+                               -> LockResult<(MutexGuard<'a, T>, WaitTimeoutResult)> {
         unsafe {
             let me: &'static Condvar = &*(self as *const _);
             me.inner.wait_timeout(guard, dur)
@@ -192,12 +207,13 @@ impl Condvar {
     /// that the implementation will repeatedly wait while the duration has not
     /// passed and the provided function returns `false`.
     #[unstable(feature = "wait_timeout_with",
-               reason = "unsure if this API is broadly needed or what form it should take")]
+               reason = "unsure if this API is broadly needed or what form it should take",
+               issue = "27748")]
     pub fn wait_timeout_with<'a, T, F>(&self,
                                        guard: MutexGuard<'a, T>,
                                        dur: Duration,
                                        f: F)
-                                       -> LockResult<(MutexGuard<'a, T>, bool)>
+                                       -> LockResult<(MutexGuard<'a, T>, WaitTimeoutResult)>
             where F: FnMut(LockResult<&mut T>) -> bool {
         unsafe {
             let me: &'static Condvar = &*(self as *const _);
@@ -234,12 +250,24 @@ impl Drop for Condvar {
 }
 
 impl StaticCondvar {
+    /// Creates a new condition variable
+    #[unstable(feature = "static_condvar",
+               reason = "may be merged with Condvar in the future",
+               issue = "27717")]
+    pub const fn new() -> StaticCondvar {
+        StaticCondvar {
+            inner: sys::Condvar::new(),
+            mutex: AtomicUsize::new(0),
+        }
+    }
+
     /// Blocks the current thread until this condition variable receives a
     /// notification.
     ///
     /// See `Condvar::wait`.
     #[unstable(feature = "static_condvar",
-               reason = "may be merged with Condvar in the future")]
+               reason = "may be merged with Condvar in the future",
+               issue = "27717")]
     pub fn wait<'a, T>(&'static self, guard: MutexGuard<'a, T>)
                        -> LockResult<MutexGuard<'a, T>> {
         let poisoned = unsafe {
@@ -260,10 +288,18 @@ impl StaticCondvar {
     ///
     /// See `Condvar::wait_timeout`.
     #[unstable(feature = "static_condvar",
-               reason = "may be merged with Condvar in the future")]
+               reason = "may be merged with Condvar in the future",
+               issue = "27717")]
+    #[deprecated(since = "1.6.0", reason = "replaced by `std::sync::StaticCondvar::wait_timeout`")]
     pub fn wait_timeout_ms<'a, T>(&'static self, guard: MutexGuard<'a, T>, ms: u32)
                                   -> LockResult<(MutexGuard<'a, T>, bool)> {
-        self.wait_timeout(guard, Duration::from_millis(ms as u64))
+        match self.wait_timeout(guard, Duration::from_millis(ms as u64)) {
+            Ok((guard, timed_out)) => Ok((guard, !timed_out.timed_out())),
+            Err(poison) => {
+                let (guard, timed_out) = poison.into_inner();
+                Err(PoisonError::new((guard, !timed_out.timed_out())))
+            }
+        }
     }
 
     /// Waits on this condition variable for a notification, timing out after a
@@ -271,21 +307,22 @@ impl StaticCondvar {
     ///
     /// See `Condvar::wait_timeout`.
     #[unstable(feature = "static_condvar",
-               reason = "may be merged with Condvar in the future")]
+               reason = "may be merged with Condvar in the future",
+               issue = "27717")]
     pub fn wait_timeout<'a, T>(&'static self,
                                guard: MutexGuard<'a, T>,
                                timeout: Duration)
-                               -> LockResult<(MutexGuard<'a, T>, bool)> {
-        let (poisoned, success) = unsafe {
+                               -> LockResult<(MutexGuard<'a, T>, WaitTimeoutResult)> {
+        let (poisoned, result) = unsafe {
             let lock = mutex::guard_lock(&guard);
             self.verify(lock);
             let success = self.inner.wait_timeout(lock, timeout);
-            (mutex::guard_poison(&guard).get(), success)
+            (mutex::guard_poison(&guard).get(), WaitTimeoutResult(!success))
         };
         if poisoned {
-            Err(PoisonError::new((guard, success)))
+            Err(PoisonError::new((guard, result)))
         } else {
-            Ok((guard, success))
+            Ok((guard, result))
         }
     }
 
@@ -297,29 +334,29 @@ impl StaticCondvar {
     ///
     /// See `Condvar::wait_timeout_with`.
     #[unstable(feature = "static_condvar",
-               reason = "may be merged with Condvar in the future")]
+               reason = "may be merged with Condvar in the future",
+               issue = "27717")]
     pub fn wait_timeout_with<'a, T, F>(&'static self,
                                        guard: MutexGuard<'a, T>,
                                        dur: Duration,
                                        mut f: F)
-                                       -> LockResult<(MutexGuard<'a, T>, bool)>
+                                       -> LockResult<(MutexGuard<'a, T>, WaitTimeoutResult)>
             where F: FnMut(LockResult<&mut T>) -> bool {
         // This could be made more efficient by pushing the implementation into
         // sys::condvar
-        let start = SteadyTime::now();
+        let start = Instant::now();
         let mut guard_result: LockResult<MutexGuard<'a, T>> = Ok(guard);
         while !f(guard_result
                     .as_mut()
                     .map(|g| &mut **g)
                     .map_err(|e| PoisonError::new(&mut **e.get_mut()))) {
-            let now = SteadyTime::now();
-            let consumed = &now - &start;
+            let consumed = start.elapsed();
             let guard = guard_result.unwrap_or_else(|e| e.into_inner());
-            let (new_guard_result, no_timeout) = if consumed > dur {
-                (Ok(guard), false)
+            let (new_guard_result, timed_out) = if consumed > dur {
+                (Ok(guard), WaitTimeoutResult(true))
             } else {
                 match self.wait_timeout(guard, dur - consumed) {
-                    Ok((new_guard, no_timeout)) => (Ok(new_guard), no_timeout),
+                    Ok((new_guard, timed_out)) => (Ok(new_guard), timed_out),
                     Err(err) => {
                         let (new_guard, no_timeout) = err.into_inner();
                         (Err(PoisonError::new(new_guard)), no_timeout)
@@ -327,30 +364,33 @@ impl StaticCondvar {
                 }
             };
             guard_result = new_guard_result;
-            if !no_timeout {
+            if timed_out.timed_out() {
                 let result = f(guard_result
                                     .as_mut()
                                     .map(|g| &mut **g)
                                     .map_err(|e| PoisonError::new(&mut **e.get_mut())));
+                let result = WaitTimeoutResult(!result);
                 return poison::map_result(guard_result, |g| (g, result));
             }
         }
 
-        poison::map_result(guard_result, |g| (g, true))
+        poison::map_result(guard_result, |g| (g, WaitTimeoutResult(false)))
     }
 
     /// Wakes up one blocked thread on this condvar.
     ///
     /// See `Condvar::notify_one`.
     #[unstable(feature = "static_condvar",
-               reason = "may be merged with Condvar in the future")]
+               reason = "may be merged with Condvar in the future",
+               issue = "27717")]
     pub fn notify_one(&'static self) { unsafe { self.inner.notify_one() } }
 
     /// Wakes up all blocked threads on this condvar.
     ///
     /// See `Condvar::notify_all`.
     #[unstable(feature = "static_condvar",
-               reason = "may be merged with Condvar in the future")]
+               reason = "may be merged with Condvar in the future",
+               issue = "27717")]
     pub fn notify_all(&'static self) { unsafe { self.inner.notify_all() } }
 
     /// Deallocates all resources associated with this static condvar.
@@ -360,7 +400,8 @@ impl StaticCondvar {
     /// users of the condvar. This method is required to be called to not leak
     /// memory on all platforms.
     #[unstable(feature = "static_condvar",
-               reason = "may be merged with Condvar in the future")]
+               reason = "may be merged with Condvar in the future",
+               issue = "27717")]
     pub unsafe fn destroy(&'static self) {
         self.inner.destroy()
     }
@@ -388,10 +429,10 @@ impl StaticCondvar {
 mod tests {
     use prelude::v1::*;
 
-    use super::{StaticCondvar, CONDVAR_INIT};
+    use super::StaticCondvar;
     use sync::mpsc::channel;
-    use sync::{StaticMutex, MUTEX_INIT, Condvar, Mutex, Arc};
-    use sync::atomic::{AtomicUsize, ATOMIC_USIZE_INIT, Ordering};
+    use sync::{StaticMutex, Condvar, Mutex, Arc};
+    use sync::atomic::{AtomicUsize, Ordering};
     use thread;
     use time::Duration;
     use u32;
@@ -405,7 +446,7 @@ mod tests {
 
     #[test]
     fn static_smoke() {
-        static C: StaticCondvar = CONDVAR_INIT;
+        static C: StaticCondvar = StaticCondvar::new();
         C.notify_one();
         C.notify_all();
         unsafe { C.destroy(); }
@@ -413,8 +454,8 @@ mod tests {
 
     #[test]
     fn notify_one() {
-        static C: StaticCondvar = CONDVAR_INIT;
-        static M: StaticMutex = MUTEX_INIT;
+        static C: StaticCondvar = StaticCondvar::new();
+        static M: StaticMutex = StaticMutex::new();
 
         let g = M.lock().unwrap();
         let _t = thread::spawn(move|| {
@@ -464,8 +505,8 @@ mod tests {
 
     #[test]
     fn wait_timeout_ms() {
-        static C: StaticCondvar = CONDVAR_INIT;
-        static M: StaticMutex = MUTEX_INIT;
+        static C: StaticCondvar = StaticCondvar::new();
+        static M: StaticMutex = StaticMutex::new();
 
         let g = M.lock().unwrap();
         let (g, _no_timeout) = C.wait_timeout_ms(g, 1).unwrap();
@@ -483,15 +524,15 @@ mod tests {
 
     #[test]
     fn wait_timeout_with() {
-        static C: StaticCondvar = CONDVAR_INIT;
-        static M: StaticMutex = MUTEX_INIT;
-        static S: AtomicUsize = ATOMIC_USIZE_INIT;
+        static C: StaticCondvar = StaticCondvar::new();
+        static M: StaticMutex = StaticMutex::new();
+        static S: AtomicUsize = AtomicUsize::new(0);
 
         let g = M.lock().unwrap();
-        let (g, success) = C.wait_timeout_with(g, Duration::new(0, 1000), |_| {
+        let (g, timed_out) = C.wait_timeout_with(g, Duration::new(0, 1000), |_| {
             false
         }).unwrap();
-        assert!(!success);
+        assert!(timed_out.timed_out());
 
         let (tx, rx) = channel();
         let _t = thread::spawn(move || {
@@ -515,7 +556,7 @@ mod tests {
 
         let mut state = 0;
         let day = 24 * 60 * 60;
-        let (_g, success) = C.wait_timeout_with(g, Duration::new(day, 0), |_| {
+        let (_g, timed_out) = C.wait_timeout_with(g, Duration::new(day, 0), |_| {
             assert_eq!(state, S.load(Ordering::SeqCst));
             tx.send(()).unwrap();
             state += 1;
@@ -524,15 +565,15 @@ mod tests {
                 _ => true,
             }
         }).unwrap();
-        assert!(success);
+        assert!(!timed_out.timed_out());
     }
 
     #[test]
     #[should_panic]
     fn two_mutexes() {
-        static M1: StaticMutex = MUTEX_INIT;
-        static M2: StaticMutex = MUTEX_INIT;
-        static C: StaticCondvar = CONDVAR_INIT;
+        static M1: StaticMutex = StaticMutex::new();
+        static M2: StaticMutex = StaticMutex::new();
+        static C: StaticCondvar = StaticCondvar::new();
 
         let mut g = M1.lock().unwrap();
         let _t = thread::spawn(move|| {

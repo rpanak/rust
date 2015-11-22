@@ -45,23 +45,23 @@
 #![cfg_attr(stage0, feature(custom_attribute))]
 #![crate_name = "term"]
 #![unstable(feature = "rustc_private",
-            reason = "use the crates.io `term` library instead")]
+            reason = "use the crates.io `term` library instead",
+            issue = "27812")]
 #![staged_api]
 #![crate_type = "rlib"]
 #![crate_type = "dylib"]
-#![doc(html_logo_url = "http://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
+#![doc(html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
        html_favicon_url = "https://doc.rust-lang.org/favicon.ico",
-       html_root_url = "http://doc.rust-lang.org/nightly/",
-       html_playground_url = "http://play.rust-lang.org/")]
+       html_root_url = "https://doc.rust-lang.org/nightly/",
+       html_playground_url = "https://play.rust-lang.org/",
+       test(attr(deny(warnings))))]
 #![deny(missing_docs)]
 
 #![feature(box_syntax)]
-#![feature(collections)]
 #![feature(rustc_private)]
 #![feature(staged_api)]
-#![feature(std_misc)]
 #![feature(str_char)]
-#![feature(path_ext)]
+#![feature(vec_push_all)]
 #![cfg_attr(windows, feature(libc))]
 
 #[macro_use] extern crate log;
@@ -152,6 +152,7 @@ pub fn stderr() -> Option<Box<Terminal<WriterWrapper> + Send>> {
 
 
 /// Terminal color definitions
+#[allow(missing_docs)]
 pub mod color {
     /// Number for a terminal color
     pub type Color = u16;

@@ -8,10 +8,8 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use prelude::v1::*;
-
 use io;
-use libc;
+use ptr;
 use sys::cvt;
 use sys::c;
 use sys::handle::Handle;
@@ -25,10 +23,10 @@ pub struct AnonPipe {
 }
 
 pub fn anon_pipe() -> io::Result<(AnonPipe, AnonPipe)> {
-    let mut reader = libc::INVALID_HANDLE_VALUE;
-    let mut writer = libc::INVALID_HANDLE_VALUE;
+    let mut reader = c::INVALID_HANDLE_VALUE;
+    let mut writer = c::INVALID_HANDLE_VALUE;
     try!(cvt(unsafe {
-        c::CreatePipe(&mut reader, &mut writer, 0 as *mut _, 0)
+        c::CreatePipe(&mut reader, &mut writer, ptr::null_mut(), 0)
     }));
     let reader = Handle::new(reader);
     let writer = Handle::new(writer);
@@ -37,6 +35,9 @@ pub fn anon_pipe() -> io::Result<(AnonPipe, AnonPipe)> {
 
 impl AnonPipe {
     pub fn handle(&self) -> &Handle { &self.inner }
+    pub fn into_handle(self) -> Handle { self.inner }
+
+    pub fn raw(&self) -> c::HANDLE { self.inner.raw() }
 
     pub fn read(&self, buf: &mut [u8]) -> io::Result<usize> {
         self.inner.read(buf)

@@ -10,9 +10,10 @@
 
 // Test a very simple custom DST coercion.
 
-#![feature(core)]
+#![feature(core, rc_weak)]
 
-use std::rc::Rc;
+use std::cell::RefCell;
+use std::rc::{Rc, Weak};
 
 trait Baz {
     fn get(&self) -> i32;
@@ -35,5 +36,14 @@ fn main() {
     let b: Rc<Baz> = a.clone();
     assert_eq!(b.get(), 42);
 
+    let c: Weak<i32> = Rc::downgrade(&a);
+    let d: Weak<Baz> = c.clone();
+
     let _c = b.clone();
+
+    let a: Rc<RefCell<i32>> = Rc::new(RefCell::new(42));
+    let b: Rc<RefCell<Baz>> = a.clone();
+    assert_eq!(b.borrow().get(), 42);
+    // FIXME
+    let c: Weak<RefCell<Baz>> = Rc::downgrade(&a) as Weak<_>;
 }

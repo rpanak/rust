@@ -11,10 +11,10 @@
 //! The main parser interface
 
 use ast;
-use codemap::{Span, CodeMap, FileMap};
+use codemap::{self, Span, CodeMap, FileMap};
 use diagnostic::{SpanHandler, Handler, Auto, FatalError};
-use parse::attr::ParserAttr;
 use parse::parser::Parser;
+use parse::token::InternedString;
 use ptr::P;
 use str::char_at;
 
@@ -82,7 +82,8 @@ pub fn parse_crate_attrs_from_file(
     cfg: ast::CrateConfig,
     sess: &ParseSess
 ) -> Vec<ast::Attribute> {
-    new_parser_from_file(sess, cfg, input).parse_inner_attributes()
+    // FIXME: maybe_aborted?
+    panictry!(new_parser_from_file(sess, cfg, input).parse_inner_attributes())
 }
 
 pub fn parse_crate_from_source_str(name: String,
@@ -106,7 +107,7 @@ pub fn parse_crate_attrs_from_source_str(name: String,
                                            cfg,
                                            name,
                                            source);
-    maybe_aborted(p.parse_inner_attributes(), p)
+    maybe_aborted(panictry!(p.parse_inner_attributes()), p)
 }
 
 pub fn parse_expr_from_source_str(name: String,
@@ -115,7 +116,7 @@ pub fn parse_expr_from_source_str(name: String,
                                   sess: &ParseSess)
                                   -> P<ast::Expr> {
     let mut p = new_parser_from_source_str(sess, cfg, name, source);
-    maybe_aborted(p.parse_expr(), p)
+    maybe_aborted(panictry!(p.parse_expr()), p)
 }
 
 pub fn parse_item_from_source_str(name: String,
@@ -124,7 +125,7 @@ pub fn parse_item_from_source_str(name: String,
                                   sess: &ParseSess)
                                   -> Option<P<ast::Item>> {
     let mut p = new_parser_from_source_str(sess, cfg, name, source);
-    maybe_aborted(p.parse_item(),p)
+    maybe_aborted(panictry!(p.parse_item()), p)
 }
 
 pub fn parse_meta_from_source_str(name: String,
@@ -133,7 +134,7 @@ pub fn parse_meta_from_source_str(name: String,
                                   sess: &ParseSess)
                                   -> P<ast::MetaItem> {
     let mut p = new_parser_from_source_str(sess, cfg, name, source);
-    maybe_aborted(p.parse_meta_item(),p)
+    maybe_aborted(panictry!(p.parse_meta_item()), p)
 }
 
 pub fn parse_stmt_from_source_str(name: String,
@@ -147,7 +148,7 @@ pub fn parse_stmt_from_source_str(name: String,
         name,
         source
     );
-    maybe_aborted(p.parse_stmt(), p)
+    maybe_aborted(panictry!(p.parse_stmt()), p)
 }
 
 // Warning: This parses with quote_depth > 0, which is not the default.
@@ -203,7 +204,14 @@ pub fn new_sub_parser_from_file<'a>(sess: &'a ParseSess,
 pub fn filemap_to_parser<'a>(sess: &'a ParseSess,
                              filemap: Rc<FileMap>,
                              cfg: ast::CrateConfig) -> Parser<'a> {
-    tts_to_parser(sess, filemap_to_tts(sess, filemap), cfg)
+    let end_pos = filemap.end_pos;
+    let mut parser = tts_to_parser(sess, filemap_to_tts(sess, filemap), cfg);
+
+    if parser.token == token::Eof && parser.span == codemap::DUMMY_SP {
+        parser.span = codemap::mk_sp(end_pos, end_pos);
+    }
+
+    parser
 }
 
 // must preserve old name for now, because quote! from the *existing*
@@ -227,7 +235,7 @@ fn file_to_filemap(sess: &ParseSess, path: &Path, spanopt: Option<Span>)
             let msg = format!("couldn't read {:?}: {}", path.display(), e);
             match spanopt {
                 Some(sp) => panic!(sess.span_diagnostic.span_fatal(sp, &msg)),
-                None => sess.span_diagnostic.handler().fatal(&msg)
+                None => panic!(sess.span_diagnostic.handler().fatal(&msg))
             }
         }
     }
@@ -432,17 +440,17 @@ fn looks_like_width_suffix(first_chars: &[char], s: &str) -> bool {
 fn filtered_float_lit(data: token::InternedString, suffix: Option<&str>,
                       sd: &SpanHandler, sp: Span) -> ast::Lit_ {
     debug!("filtered_float_lit: {}, {:?}", data, suffix);
-    match suffix {
+    match suffix.as_ref().map(|s| &**s) {
         Some("f32") => ast::LitFloat(data, ast::TyF32),
         Some("f64") => ast::LitFloat(data, ast::TyF64),
         Some(suf) => {
             if suf.len() >= 2 && looks_like_width_suffix(&['f'], suf) {
                 // if it looks like a width, lets try to be helpful.
-                sd.span_err(sp, &*format!("illegal width `{}` for float literal, \
-                                          valid widths are 32 and 64", &suf[1..]));
+                sd.span_err(sp, &format!("invalid width `{}` for float literal", &suf[1..]));
+                sd.fileline_help(sp, "valid widths are 32 and 64");
             } else {
-                sd.span_err(sp, &*format!("illegal suffix `{}` for float literal, \
-                                          valid suffixes are `f32` and `f64`", suf));
+                sd.span_err(sp, &format!("invalid suffix `{}` for float literal", suf));
+                sd.fileline_help(sp, "valid suffixes are `f32` and `f64`");
             }
 
             ast::LitFloatUnsuffixed(data)
@@ -450,12 +458,13 @@ fn filtered_float_lit(data: token::InternedString, suffix: Option<&str>,
         None => ast::LitFloatUnsuffixed(data)
     }
 }
-pub fn float_lit(s: &str, suffix: Option<&str>, sd: &SpanHandler, sp: Span) -> ast::Lit_ {
+pub fn float_lit(s: &str, suffix: Option<InternedString>,
+                 sd: &SpanHandler, sp: Span) -> ast::Lit_ {
     debug!("float_lit: {:?}, {:?}", s, suffix);
     // FIXME #2252: bounds checking float literals is deferred until trans
     let s = s.chars().filter(|&c| c != '_').collect::<String>();
-    let data = token::intern_and_get_ident(&*s);
-    filtered_float_lit(data, suffix, sd, sp)
+    let data = token::intern_and_get_ident(&s);
+    filtered_float_lit(data, suffix.as_ref().map(|s| &**s), sd, sp)
 }
 
 /// Parse a string representing a byte literal into its final form. Similar to `char_lit`
@@ -490,7 +499,7 @@ pub fn byte_lit(lit: &str) -> (u8, usize) {
     }
 }
 
-pub fn binary_lit(lit: &str) -> Rc<Vec<u8>> {
+pub fn byte_str_lit(lit: &str) -> Rc<Vec<u8>> {
     let mut res = Vec::with_capacity(lit.len());
 
     // FIXME #8372: This could be a for-loop if it didn't borrow the iterator
@@ -508,7 +517,7 @@ pub fn binary_lit(lit: &str) -> Rc<Vec<u8>> {
         }
     }
 
-    // binary literals *must* be ASCII, but the escapes don't have to be
+    // byte string literals *must* be ASCII, but the escapes don't have to be
     let mut chars = lit.bytes().enumerate().peekable();
     loop {
         match chars.next() {
@@ -550,7 +559,11 @@ pub fn binary_lit(lit: &str) -> Rc<Vec<u8>> {
     Rc::new(res)
 }
 
-pub fn integer_lit(s: &str, suffix: Option<&str>, sd: &SpanHandler, sp: Span) -> ast::Lit_ {
+pub fn integer_lit(s: &str,
+                   suffix: Option<InternedString>,
+                   sd: &SpanHandler,
+                   sp: Span)
+                   -> ast::Lit_ {
     // s can only be ascii, byte indexing is fine
 
     let s2 = s.chars().filter(|&c| c != '_').collect::<String>();
@@ -572,8 +585,8 @@ pub fn integer_lit(s: &str, suffix: Option<&str>, sd: &SpanHandler, sp: Span) ->
     }
 
     // 1f64 and 2f32 etc. are valid float literals.
-    match suffix {
-        Some(suf) if looks_like_width_suffix(&['f'], suf) => {
+    if let Some(ref suf) = suffix {
+        if looks_like_width_suffix(&['f'], suf) {
             match base {
                 16 => sd.span_err(sp, "hexadecimal float literal is not supported"),
                 8 => sd.span_err(sp, "octal float literal is not supported"),
@@ -581,18 +594,17 @@ pub fn integer_lit(s: &str, suffix: Option<&str>, sd: &SpanHandler, sp: Span) ->
                 _ => ()
             }
             let ident = token::intern_and_get_ident(&*s);
-            return filtered_float_lit(ident, suffix, sd, sp)
+            return filtered_float_lit(ident, Some(&**suf), sd, sp)
         }
-        _ => {}
     }
 
     if base != 10 {
         s = &s[2..];
     }
 
-    if let Some(suf) = suffix {
+    if let Some(ref suf) = suffix {
         if suf.is_empty() { sd.span_bug(sp, "found empty literal suffix in Some")}
-        ty = match suf {
+        ty = match &**suf {
             "isize" => ast::SignedIntLit(ast::TyIs, ast::Plus),
             "i8"  => ast::SignedIntLit(ast::TyI8, ast::Plus),
             "i16" => ast::SignedIntLit(ast::TyI16, ast::Plus),
@@ -607,11 +619,11 @@ pub fn integer_lit(s: &str, suffix: Option<&str>, sd: &SpanHandler, sp: Span) ->
                 // i<digits> and u<digits> look like widths, so lets
                 // give an error message along those lines
                 if looks_like_width_suffix(&['i', 'u'], suf) {
-                    sd.span_err(sp, &*format!("illegal width `{}` for integer literal; \
-                                              valid widths are 8, 16, 32 and 64",
-                                              &suf[1..]));
+                    sd.span_err(sp, &format!("invalid width `{}` for integer literal",
+                                             &suf[1..]));
+                    sd.fileline_help(sp, "valid widths are 8, 16, 32 and 64");
                 } else {
-                    sd.span_err(sp, &*format!("illegal suffix `{}` for numeric literal", suf));
+                    sd.span_err(sp, &format!("invalid suffix `{}` for numeric literal", suf));
                     sd.fileline_help(sp, "the suffix must be one of the integral types \
                                       (`u32`, `isize`, etc)");
                 }
@@ -657,7 +669,7 @@ mod tests {
     use std::rc::Rc;
     use codemap::{Span, BytePos, Pos, Spanned, NO_EXPANSION};
     use owned_slice::OwnedSlice;
-    use ast;
+    use ast::{self, TokenTree};
     use abi;
     use attr::{first_attr_value_str_by_name, AttrMetaMethods};
     use parse;
@@ -727,42 +739,42 @@ mod tests {
         match (tts.len(), tts.get(0), tts.get(1), tts.get(2), tts.get(3)) {
             (
                 4,
-                Some(&ast::TtToken(_, token::Ident(name_macro_rules, token::Plain))),
-                Some(&ast::TtToken(_, token::Not)),
-                Some(&ast::TtToken(_, token::Ident(name_zip, token::Plain))),
-                Some(&ast::TtDelimited(_, ref macro_delimed)),
+                Some(&TokenTree::Token(_, token::Ident(name_macro_rules, token::Plain))),
+                Some(&TokenTree::Token(_, token::Not)),
+                Some(&TokenTree::Token(_, token::Ident(name_zip, token::Plain))),
+                Some(&TokenTree::Delimited(_, ref macro_delimed)),
             )
-            if name_macro_rules.as_str() == "macro_rules"
-            && name_zip.as_str() == "zip" => {
+            if name_macro_rules.name.as_str() == "macro_rules"
+            && name_zip.name.as_str() == "zip" => {
                 let tts = &macro_delimed.tts[..];
                 match (tts.len(), tts.get(0), tts.get(1), tts.get(2)) {
                     (
                         3,
-                        Some(&ast::TtDelimited(_, ref first_delimed)),
-                        Some(&ast::TtToken(_, token::FatArrow)),
-                        Some(&ast::TtDelimited(_, ref second_delimed)),
+                        Some(&TokenTree::Delimited(_, ref first_delimed)),
+                        Some(&TokenTree::Token(_, token::FatArrow)),
+                        Some(&TokenTree::Delimited(_, ref second_delimed)),
                     )
                     if macro_delimed.delim == token::Paren => {
                         let tts = &first_delimed.tts[..];
                         match (tts.len(), tts.get(0), tts.get(1)) {
                             (
                                 2,
-                                Some(&ast::TtToken(_, token::Dollar)),
-                                Some(&ast::TtToken(_, token::Ident(name, token::Plain))),
+                                Some(&TokenTree::Token(_, token::Dollar)),
+                                Some(&TokenTree::Token(_, token::Ident(ident, token::Plain))),
                             )
                             if first_delimed.delim == token::Paren
-                            && name.as_str() == "a" => {},
+                            && ident.name.as_str() == "a" => {},
                             _ => panic!("value 3: {:?}", **first_delimed),
                         }
                         let tts = &second_delimed.tts[..];
                         match (tts.len(), tts.get(0), tts.get(1)) {
                             (
                                 2,
-                                Some(&ast::TtToken(_, token::Dollar)),
-                                Some(&ast::TtToken(_, token::Ident(name, token::Plain))),
+                                Some(&TokenTree::Token(_, token::Dollar)),
+                                Some(&TokenTree::Token(_, token::Ident(ident, token::Plain))),
                             )
                             if second_delimed.delim == token::Paren
-                            && name.as_str() == "a" => {},
+                            && ident.name.as_str() == "a" => {},
                             _ => panic!("value 4: {:?}", **second_delimed),
                         }
                     },
@@ -778,39 +790,39 @@ mod tests {
         let tts = string_to_tts("fn a (b : i32) { b; }".to_string());
 
         let expected = vec![
-            ast::TtToken(sp(0, 2),
+            TokenTree::Token(sp(0, 2),
                          token::Ident(str_to_ident("fn"),
                          token::IdentStyle::Plain)),
-            ast::TtToken(sp(3, 4),
+            TokenTree::Token(sp(3, 4),
                          token::Ident(str_to_ident("a"),
                          token::IdentStyle::Plain)),
-            ast::TtDelimited(
+            TokenTree::Delimited(
                 sp(5, 14),
                 Rc::new(ast::Delimited {
                     delim: token::DelimToken::Paren,
                     open_span: sp(5, 6),
                     tts: vec![
-                        ast::TtToken(sp(6, 7),
+                        TokenTree::Token(sp(6, 7),
                                      token::Ident(str_to_ident("b"),
                                      token::IdentStyle::Plain)),
-                        ast::TtToken(sp(8, 9),
+                        TokenTree::Token(sp(8, 9),
                                      token::Colon),
-                        ast::TtToken(sp(10, 13),
+                        TokenTree::Token(sp(10, 13),
                                      token::Ident(str_to_ident("i32"),
                                      token::IdentStyle::Plain)),
                     ],
                     close_span: sp(13, 14),
                 })),
-            ast::TtDelimited(
+            TokenTree::Delimited(
                 sp(15, 21),
                 Rc::new(ast::Delimited {
                     delim: token::DelimToken::Brace,
                     open_span: sp(15, 16),
                     tts: vec![
-                        ast::TtToken(sp(17, 18),
+                        TokenTree::Token(sp(17, 18),
                                      token::Ident(str_to_ident("b"),
                                      token::IdentStyle::Plain)),
-                        ast::TtToken(sp(18, 19),
+                        TokenTree::Token(sp(18, 19),
                                      token::Semi)
                     ],
                     close_span: sp(20, 21),
@@ -844,7 +856,7 @@ mod tests {
 
     #[test] fn parse_stmt_1 () {
         assert!(string_to_stmt("b;".to_string()) ==
-                   P(Spanned{
+                   Some(P(Spanned{
                        node: ast::StmtExpr(P(ast::Expr {
                            id: ast::DUMMY_NODE_ID,
                            node: ast::ExprPath(None, ast::Path {
@@ -859,7 +871,7 @@ mod tests {
                             }),
                            span: sp(0,1)}),
                                            ast::DUMMY_NODE_ID),
-                       span: sp(0,1)}))
+                       span: sp(0,1)})))
 
     }
 
@@ -870,7 +882,7 @@ mod tests {
     #[test] fn parse_ident_pat () {
         let sess = ParseSess::new();
         let mut parser = string_to_parser(&sess, "b".to_string());
-        assert!(panictry!(parser.parse_pat_nopanic())
+        assert!(panictry!(parser.parse_pat())
                 == P(ast::Pat{
                 id: ast::DUMMY_NODE_ID,
                 node: ast::PatIdent(ast::BindByValue(ast::MutImmutable),
@@ -923,6 +935,7 @@ mod tests {
                                 variadic: false
                             }),
                                     ast::Unsafety::Normal,
+                                    ast::Constness::NotConst,
                                     abi::Rust,
                                     ast::Generics{ // no idea on either of these:
                                         lifetimes: Vec::new(),
@@ -1077,10 +1090,7 @@ mod tests {
             "foo!( fn main() { body } )".to_string(), vec![], &sess);
 
         let tts = match expr.node {
-            ast::ExprMac(ref mac) => {
-                let ast::MacInvocTT(_, ref tts, _) = mac.node;
-                tts.clone()
-            }
+            ast::ExprMac(ref mac) => mac.node.tts.clone(),
             _ => panic!("not a macro"),
         };
 

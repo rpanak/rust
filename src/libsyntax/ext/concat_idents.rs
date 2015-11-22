@@ -8,7 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use ast;
+use ast::{self, TokenTree};
 use codemap::Span;
 use ext::base::*;
 use ext::base;
@@ -17,12 +17,13 @@ use parse::token;
 use parse::token::str_to_ident;
 use ptr::P;
 
-pub fn expand_syntax_ext<'cx>(cx: &mut ExtCtxt, sp: Span, tts: &[ast::TokenTree])
+pub fn expand_syntax_ext<'cx>(cx: &mut ExtCtxt, sp: Span, tts: &[TokenTree])
                               -> Box<base::MacResult+'cx> {
     if !cx.ecfg.enable_concat_idents() {
         feature_gate::emit_feature_err(&cx.parse_sess.span_diagnostic,
                                        "concat_idents",
                                        sp,
+                                       feature_gate::GateIssue::Language,
                                        feature_gate::EXPLAIN_CONCAT_IDENTS);
         return base::DummyResult::expr(sp);
     }
@@ -31,7 +32,7 @@ pub fn expand_syntax_ext<'cx>(cx: &mut ExtCtxt, sp: Span, tts: &[ast::TokenTree]
     for (i, e) in tts.iter().enumerate() {
         if i & 1 == 1 {
             match *e {
-                ast::TtToken(_, token::Comma) => {},
+                TokenTree::Token(_, token::Comma) => {},
                 _ => {
                     cx.span_err(sp, "concat_idents! expecting comma.");
                     return DummyResult::expr(sp);
@@ -39,8 +40,8 @@ pub fn expand_syntax_ext<'cx>(cx: &mut ExtCtxt, sp: Span, tts: &[ast::TokenTree]
             }
         } else {
             match *e {
-                ast::TtToken(_, token::Ident(ident, _)) => {
-                    res_str.push_str(&token::get_ident(ident))
+                TokenTree::Token(_, token::Ident(ident, _)) => {
+                    res_str.push_str(&ident.name.as_str())
                 },
                 _ => {
                     cx.span_err(sp, "concat_idents! requires ident args.");
@@ -49,7 +50,7 @@ pub fn expand_syntax_ext<'cx>(cx: &mut ExtCtxt, sp: Span, tts: &[ast::TokenTree]
             }
         }
     }
-    let res = str_to_ident(&res_str[..]);
+    let res = str_to_ident(&res_str);
 
     let e = P(ast::Expr {
         id: ast::DUMMY_NODE_ID,

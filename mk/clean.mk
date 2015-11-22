@@ -101,7 +101,6 @@ define CLEAN_TARGET_STAGE_N
 clean$(1)_T_$(2)_H_$(3): \
 	    $$(foreach crate,$$(CRATES),clean$(1)_T_$(2)_H_$(3)-lib-$$(crate)) \
 	    $$(foreach tool,$$(TOOLS) $$(DEBUGGER_BIN_SCRIPTS_ALL),clean$(1)_T_$(2)_H_$(3)-tool-$$(tool))
-	$$(Q)rm -f $$(TLIB$(1)_T_$(2)_H_$(3))/libmorestack.a
 	$$(Q)rm -f $$(TLIB$(1)_T_$(2)_H_$(3))/libcompiler-rt.a
 	$(Q)rm -f $$(TLIB$(1)_T_$(2)_H_$(3))/librun_pass_stage* # For unix
 	$(Q)rm -f $$(TLIB$(1)_T_$(2)_H_$(3))/run_pass_stage* # For windows
@@ -118,16 +117,3 @@ $(foreach host, $(CFG_HOST), \
  $(eval $(foreach target, $(CFG_TARGET), \
   $(eval $(foreach stage, 0 1 2 3, \
    $(eval $(call CLEAN_TARGET_STAGE_N,$(stage),$(target),$(host))))))))
-
-define DEF_CLEAN_LLVM_HOST
-ifeq ($(CFG_LLVM_ROOT),)
-clean-llvm$(1):
-	$$(Q)$$(MAKE) -C $$(CFG_LLVM_BUILD_DIR_$(1)) clean
-else
-clean-llvm$(1): ;
-
-endif
-endef
-
-$(foreach host, $(CFG_HOST), \
- $(eval $(call DEF_CLEAN_LLVM_HOST,$(host))))

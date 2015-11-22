@@ -265,8 +265,6 @@
 // And now that you've seen all the races that I found and attempted to fix,
 // here's the code for you to find some more!
 
-use prelude::v1::*;
-
 use sync::Arc;
 use error;
 use fmt;
@@ -274,6 +272,7 @@ use mem;
 use cell::UnsafeCell;
 use marker::Reflect;
 
+#[unstable(feature = "mpsc_select", issue = "27800")]
 pub use self::select::{Select, Handle};
 use self::select::StartResult;
 use self::select::StartResult::*;
@@ -297,6 +296,7 @@ pub struct Receiver<T> {
 
 // The receiver port can be sent from place to place, so long as it
 // is not used to receive non-sendable things.
+#[stable(feature = "rust1", since = "1.0.0")]
 unsafe impl<T: Send> Send for Receiver<T> { }
 
 /// An iterator over messages on a receiver, this iterator will block
@@ -324,6 +324,7 @@ pub struct Sender<T> {
 
 // The send port can be sent from place to place, so long as it
 // is not used to send non-sendable things.
+#[stable(feature = "rust1", since = "1.0.0")]
 unsafe impl<T: Send> Send for Sender<T> { }
 
 /// The sending-half of Rust's synchronous channel type. This half can only be
@@ -333,8 +334,10 @@ pub struct SyncSender<T> {
     inner: Arc<UnsafeCell<sync::Packet<T>>>,
 }
 
+#[stable(feature = "rust1", since = "1.0.0")]
 unsafe impl<T: Send> Send for SyncSender<T> {}
 
+#[stable(feature = "rust1", since = "1.0.0")]
 impl<T> !Sync for SyncSender<T> {}
 
 /// An error returned from the `send` function on channels.
@@ -399,7 +402,7 @@ enum Flavor<T> {
 
 #[doc(hidden)]
 trait UnsafeFlavor<T> {
-    fn inner_unsafe<'a>(&'a self) -> &'a UnsafeCell<Flavor<T>>;
+    fn inner_unsafe(&self) -> &UnsafeCell<Flavor<T>>;
     unsafe fn inner_mut<'a>(&'a self) -> &'a mut Flavor<T> {
         &mut *self.inner_unsafe().get()
     }
@@ -408,12 +411,12 @@ trait UnsafeFlavor<T> {
     }
 }
 impl<T> UnsafeFlavor<T> for Sender<T> {
-    fn inner_unsafe<'a>(&'a self) -> &'a UnsafeCell<Flavor<T>> {
+    fn inner_unsafe(&self) -> &UnsafeCell<Flavor<T>> {
         &self.inner
     }
 }
 impl<T> UnsafeFlavor<T> for Receiver<T> {
-    fn inner_unsafe<'a>(&'a self) -> &'a UnsafeCell<Flavor<T>> {
+    fn inner_unsafe(&self) -> &UnsafeCell<Flavor<T>> {
         &self.inner
     }
 }
@@ -429,7 +432,7 @@ impl<T> UnsafeFlavor<T> for Receiver<T> {
 /// use std::sync::mpsc::channel;
 /// use std::thread;
 ///
-/// // tx is is the sending half (tx for transmission), and rx is the receiving
+/// // tx is the sending half (tx for transmission), and rx is the receiving
 /// // half (rx for receiving).
 /// let (tx, rx) = channel();
 ///
@@ -679,7 +682,7 @@ impl<T> SyncSender<T> {
 impl<T> Clone for SyncSender<T> {
     fn clone(&self) -> SyncSender<T> {
         unsafe { (*self.inner.get()).clone_chan(); }
-        return SyncSender::new(self.inner.clone());
+        SyncSender::new(self.inner.clone())
     }
 }
 
@@ -768,6 +771,48 @@ impl<T> Receiver<T> {
     /// If the corresponding `Sender` has disconnected, or it disconnects while
     /// this call is blocking, this call will wake up and return `Err` to
     /// indicate that no more messages can ever be received on this channel.
+    /// However, since channels are buffered, messages sent before the disconnect
+    /// will still be properly received.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::sync::mpsc;
+    /// use std::thread;
+    ///
+    /// let (send, recv) = mpsc::channel();
+    /// let handle = thread::spawn(move || {
+    ///     send.send(1u8).unwrap();
+    /// });
+    ///
+    /// handle.join().unwrap();
+    ///
+    /// assert_eq!(Ok(1), recv.recv());
+    /// ```
+    ///
+    /// Buffering behavior:
+    ///
+    /// ```
+    /// use std::sync::mpsc;
+    /// use std::thread;
+    /// use std::sync::mpsc::RecvError;
+    ///
+    /// let (send, recv) = mpsc::channel();
+    /// let handle = thread::spawn(move || {
+    ///     send.send(1u8).unwrap();
+    ///     send.send(2).unwrap();
+    ///     send.send(3).unwrap();
+    ///     drop(send);
+    /// });
+    ///
+    /// // wait for the thread to join so we ensure the sender is dropped
+    /// handle.join().unwrap();
+    ///
+    /// assert_eq!(Ok(1), recv.recv());
+    /// assert_eq!(Ok(2), recv.recv());
+    /// assert_eq!(Ok(3), recv.recv());
+    /// assert_eq!(Err(RecvError), recv.recv());
+    /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn recv(&self) -> Result<T, RecvError> {
         loop {
@@ -914,6 +959,7 @@ impl<'a, T> IntoIterator for &'a Receiver<T> {
     fn into_iter(self) -> Iter<'a, T> { self.iter() }
 }
 
+#[stable(feature = "receiver_into_iter", since = "1.1.0")]
 impl<T> Iterator for IntoIter<T> {
     type Item = T;
     fn next(&mut self) -> Option<T> { self.rx.recv().ok() }
@@ -1065,7 +1111,7 @@ impl error::Error for TryRecvError {
 mod tests {
     use prelude::v1::*;
 
-    use std::env;
+    use env;
     use super::*;
     use thread;
 
@@ -1613,7 +1659,7 @@ mod tests {
 mod sync_tests {
     use prelude::v1::*;
 
-    use std::env;
+    use env;
     use thread;
     use super::*;
 

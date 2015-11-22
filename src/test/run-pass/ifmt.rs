@@ -15,12 +15,13 @@
 #![allow(unknown_features)]
 #![feature(box_syntax)]
 
-use std::fmt;
+use std::fmt::{self, Write};
 use std::usize;
 
 struct A;
 struct B;
 struct C;
+struct D;
 
 impl fmt::LowerHex for A {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -35,6 +36,13 @@ impl fmt::UpperHex for B {
 impl fmt::Display for C {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.pad_integral(true, "☃", "123")
+    }
+}
+impl fmt::Binary for D {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        try!(f.write_str("aa"));
+        try!(f.write_char('☃'));
+        f.write_str("bb")
     }
 }
 
@@ -66,6 +74,10 @@ pub fn main() {
     t!(format!("{:?}", 10_usize), "10");
     t!(format!("{:?}", "true"), "\"true\"");
     t!(format!("{:?}", "foo\nbar"), "\"foo\\nbar\"");
+    t!(format!("{:?}", "foo\n\"bar\"\r\n\'baz\'\t\\qux\\"),
+       r#""foo\n\"bar\"\r\n\'baz\'\t\\qux\\""#);
+    t!(format!("{:?}", "foo\0bar\x01baz\u{3b1}q\u{75}x"),
+       r#""foo\u{0}bar\u{1}baz\u{3b1}qux""#);
     t!(format!("{:o}", 10_usize), "12");
     t!(format!("{:x}", 10_usize), "a");
     t!(format!("{:X}", 10_usize), "A");
@@ -90,6 +102,7 @@ pub fn main() {
     t!(format!("{foo_bar}", foo_bar=1), "1");
     t!(format!("{}", 5 + 5), "10");
     t!(format!("{:#4}", C), "☃123");
+    t!(format!("{:b}", D), "aa☃bb");
 
     let a: &fmt::Debug = &1;
     t!(format!("{:?}", a), "1");

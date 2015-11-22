@@ -8,9 +8,9 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+use syntax::ast;
 use middle::ty::{self, IntVarValue, Ty};
 use rustc_data_structures::unify::UnifyKey;
-use syntax::ast;
 
 pub trait ToType<'tcx> {
     fn to_type(&self, tcx: &ty::ctxt<'tcx>) -> Ty<'tcx>;
@@ -26,8 +26,8 @@ impl UnifyKey for ty::IntVid {
 impl<'tcx> ToType<'tcx> for IntVarValue {
     fn to_type(&self, tcx: &ty::ctxt<'tcx>) -> Ty<'tcx> {
         match *self {
-            ty::IntType(i) => ty::mk_mach_int(tcx, i),
-            ty::UintType(i) => ty::mk_mach_uint(tcx, i),
+            ty::IntType(i) => tcx.mk_mach_int(i),
+            ty::UintType(i) => tcx.mk_mach_uint(i),
         }
     }
 }
@@ -43,6 +43,6 @@ impl UnifyKey for ty::FloatVid {
 
 impl<'tcx> ToType<'tcx> for ast::FloatTy {
     fn to_type(&self, tcx: &ty::ctxt<'tcx>) -> Ty<'tcx> {
-        ty::mk_mach_float(tcx, *self)
+        tcx.mk_mach_float(*self)
     }
 }

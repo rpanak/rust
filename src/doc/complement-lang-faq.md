@@ -30,15 +30,14 @@ You may also be interested in browsing [trending Rust repositories][github-rust]
 
 ## Is anyone using Rust in production?
 
-Currently, Rust is still pre-1.0, and so we don't recommend that you use Rust
-in production unless you know exactly what you're getting into.
-
-That said, there are two production deployments of Rust that we're aware of:
+Yes. For example (incomplete):
 
 * [OpenDNS](http://labs.opendns.com/2013/10/04/zeromq-helping-us-block-malicious-domains/)
 * [Skylight](http://skylight.io)
-
-Let the fact that this is an easily countable number be a warning.
+* [wit.ai](https://github.com/wit-ai/witd)
+* [Codius](https://codius.org/blog/codius-rust/)
+* [MaidSafe](http://maidsafe.net/)
+* [Terminal.com](https://terminal.com)
 
 ## Does it run on Windows?
 
@@ -77,7 +76,7 @@ Cleanup through RAII-style destructors is more likely to work than in catch bloc
 
 ## Why aren't modules type-parametric?
 
-We want to maintain the option to parametrize at runtime. We may eventually change this limitation, but initially this is how type parameters were implemented.
+We want to maintain the option to parameterize at runtime. We may eventually change this limitation, but initially this is how type parameters were implemented.
 
 ## Why aren't values type-parametric? Why only items?
 

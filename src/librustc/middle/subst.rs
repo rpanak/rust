@@ -13,9 +13,8 @@
 pub use self::ParamSpace::*;
 pub use self::RegionSubsts::*;
 
-use middle::ty::{self, Ty};
-use middle::ty_fold::{self, TypeFoldable, TypeFolder};
-use util::ppaux::Repr;
+use middle::ty::{self, Ty, HasTypeFlags, RegionEscape};
+use middle::ty::fold::{TypeFoldable, TypeFolder};
 
 use std::fmt;
 use std::iter::IntoIterator;
@@ -29,7 +28,7 @@ use syntax::codemap::{Span, DUMMY_SP};
 /// identify each in-scope parameter by an *index* and a *parameter
 /// space* (which indices where the parameter is defined; see
 /// `ParamSpace`).
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct Substs<'tcx> {
     pub types: VecPerParamSpace<Ty<'tcx>>,
     pub regions: RegionSubsts,
@@ -38,7 +37,7 @@ pub struct Substs<'tcx> {
 /// Represents the values to use when substituting lifetime parameters.
 /// If the value is `ErasedRegions`, then this subst is occurring during
 /// trans, and all region parameters will be replaced with `ty::ReStatic`.
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub enum RegionSubsts {
     ErasedRegions,
     NonerasedRegions(VecPerParamSpace<ty::Region>)
@@ -101,17 +100,6 @@ impl<'tcx> Substs<'tcx> {
         *self.types.get(ty_param_def.space, ty_param_def.index as usize)
     }
 
-    pub fn has_regions_escaping_depth(&self, depth: u32) -> bool {
-        self.types.iter().any(|&t| ty::type_escapes_depth(t, depth)) || {
-            match self.regions {
-                ErasedRegions =>
-                    false,
-                NonerasedRegions(ref regions) =>
-                    regions.iter().any(|r| r.escapes_depth(depth)),
-            }
-        }
-    }
-
     pub fn self_ty(&self) -> Option<Ty<'tcx>> {
         self.types.get_self().cloned()
     }
@@ -153,19 +141,25 @@ impl<'tcx> Substs<'tcx> {
     {
         let Substs { types, regions } = self;
         let types = types.with_vec(FnSpace, m_types);
-        let regions = regions.map(m_regions,
-                                  |r, m_regions| r.with_vec(FnSpace, m_regions));
+        let regions = regions.map(|r| r.with_vec(FnSpace, m_regions));
+        Substs { types: types, regions: regions }
+    }
+
+    pub fn method_to_trait(self) -> Substs<'tcx> {
+        let Substs { mut types, regions } = self;
+        types.truncate(FnSpace, 0);
+        let regions = regions.map(|mut r| { r.truncate(FnSpace, 0); r });
         Substs { types: types, regions: regions }
     }
 }
 
 impl RegionSubsts {
-    fn map<A, F>(self, a: A, op: F) -> RegionSubsts where
-        F: FnOnce(VecPerParamSpace<ty::Region>, A) -> VecPerParamSpace<ty::Region>,
+    pub fn map<F>(self, op: F) -> RegionSubsts where
+        F: FnOnce(VecPerParamSpace<ty::Region>) -> VecPerParamSpace<ty::Region>,
     {
         match self {
             ErasedRegions => ErasedRegions,
-            NonerasedRegions(r) => NonerasedRegions(op(r, a))
+            NonerasedRegions(r) => NonerasedRegions(op(r))
         }
     }
 
@@ -240,13 +234,11 @@ pub struct SeparateVecsPerParamSpace<T> {
 }
 
 impl<T: fmt::Debug> fmt::Debug for VecPerParamSpace<T> {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        try!(write!(fmt, "VecPerParamSpace {{"));
-        for space in &ParamSpace::all() {
-            try!(write!(fmt, "{:?}: {:?}, ", *space, self.get_slice(*space)));
-        }
-        try!(write!(fmt, "}}"));
-        Ok(())
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "[{:?};{:?};{:?}]",
+               self.get_slice(TypeSpace),
+               self.get_slice(SelfSpace),
+               self.get_slice(FnSpace))
     }
 }
 
@@ -279,8 +271,8 @@ impl<T> VecPerParamSpace<T> {
         let self_limit = type_limit + s.len();
 
         let mut content = t;
-        content.extend(s.into_iter());
-        content.extend(f.into_iter());
+        content.extend(s);
+        content.extend(f);
 
         VecPerParamSpace {
             type_limit: type_limit,
@@ -446,20 +438,6 @@ impl<T> VecPerParamSpace<T> {
         VecPerParamSpace::new_internal(result,
                                        self.type_limit,
                                        self.self_limit)
-    }
-
-    pub fn map_move<U, F>(self, mut pred: F) -> VecPerParamSpace<U> where
-        F: FnMut(T) -> U,
-    {
-        let SeparateVecsPerParamSpace {
-            types: t,
-            selfs: s,
-            fns: f
-        } = self.split();
-
-        VecPerParamSpace::new(t.into_iter().map(|p| pred(p)).collect(),
-                              s.into_iter().map(|p| pred(p)).collect(),
-                              f.into_iter().map(|p| pred(p)).collect())
     }
 
     pub fn split(self) -> SeparateVecsPerParamSpace<T> {
@@ -634,10 +612,10 @@ impl<'a, 'tcx> TypeFolder<'tcx> for SubstFolder<'a, 'tcx> {
                                 self.tcx().sess.span_bug(
                                     span,
                                     &format!("Type parameter out of range \
-                                              when substituting in region {} (root type={}) \
+                                              when substituting in region {} (root type={:?}) \
                                               (space={:?}, index={})",
-                                             data.name.as_str(),
-                                             self.root_ty.repr(self.tcx()),
+                                             data.name,
+                                             self.root_ty,
                                              data.space,
                                              data.index));
                             }
@@ -649,7 +627,7 @@ impl<'a, 'tcx> TypeFolder<'tcx> for SubstFolder<'a, 'tcx> {
     }
 
     fn fold_ty(&mut self, t: Ty<'tcx>) -> Ty<'tcx> {
-        if !ty::type_needs_subst(t) {
+        if !t.needs_subst() {
             return t;
         }
 
@@ -661,11 +639,11 @@ impl<'a, 'tcx> TypeFolder<'tcx> for SubstFolder<'a, 'tcx> {
         self.ty_stack_depth += 1;
 
         let t1 = match t.sty {
-            ty::ty_param(p) => {
+            ty::TyParam(p) => {
                 self.ty_for_param(p, t)
             }
             _ => {
-                ty_fold::super_fold_ty(self, t)
+                ty::fold::super_fold_ty(self, t)
             }
         };
 
@@ -689,14 +667,14 @@ impl<'a,'tcx> SubstFolder<'a,'tcx> {
                 let span = self.span.unwrap_or(DUMMY_SP);
                 self.tcx().sess.span_bug(
                     span,
-                    &format!("Type parameter `{}` ({}/{:?}/{}) out of range \
-                                 when substituting (root type={}) substs={}",
-                            p.repr(self.tcx()),
-                            source_ty.repr(self.tcx()),
+                    &format!("Type parameter `{:?}` ({:?}/{:?}/{}) out of range \
+                                 when substituting (root type={:?}) substs={:?}",
+                            p,
+                            source_ty,
                             p.space,
                             p.idx,
-                            self.root_ty.repr(self.tcx()),
-                            self.substs.repr(self.tcx())));
+                            self.root_ty,
+                            self.substs));
             }
         };
 
@@ -746,20 +724,20 @@ impl<'a,'tcx> SubstFolder<'a,'tcx> {
     /// first case we do not increase the Debruijn index and in the second case we do. The reason
     /// is that only in the second case have we passed through a fn binder.
     fn shift_regions_through_binders(&self, ty: Ty<'tcx>) -> Ty<'tcx> {
-        debug!("shift_regions(ty={:?}, region_binders_passed={:?}, type_has_escaping_regions={:?})",
-               ty.repr(self.tcx()), self.region_binders_passed, ty::type_has_escaping_regions(ty));
+        debug!("shift_regions(ty={:?}, region_binders_passed={:?}, has_escaping_regions={:?})",
+               ty, self.region_binders_passed, ty.has_escaping_regions());
 
-        if self.region_binders_passed == 0 || !ty::type_has_escaping_regions(ty) {
+        if self.region_binders_passed == 0 || !ty.has_escaping_regions() {
             return ty;
         }
 
-        let result = ty_fold::shift_regions(self.tcx(), self.region_binders_passed, &ty);
-        debug!("shift_regions: shifted result = {:?}", result.repr(self.tcx()));
+        let result = ty::fold::shift_regions(self.tcx(), self.region_binders_passed, &ty);
+        debug!("shift_regions: shifted result = {:?}", result);
 
         result
     }
 
     fn shift_region_through_binders(&self, region: ty::Region) -> ty::Region {
-        ty_fold::shift_region(region, self.region_binders_passed)
+        ty::fold::shift_region(region, self.region_binders_passed)
     }
 }

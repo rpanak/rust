@@ -8,22 +8,35 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#![feature(bit_set_append_split_off)]
-#![feature(bit_vec_append_split_off)]
+#![feature(ascii)]
+#![feature(binary_heap_extras)]
 #![feature(box_syntax)]
+#![feature(btree_range)]
 #![feature(collections)]
-#![feature(collections_drain)]
+#![feature(collections_bound)]
+#![feature(const_fn)]
 #![feature(core)]
-#![feature(hash)]
+#![feature(deque_extras)]
+#![feature(drain)]
+#![feature(enumset)]
+#![feature(into_cow)]
+#![feature(iter_arith)]
+#![feature(pattern)]
 #![feature(rand)]
+#![feature(range_inclusive)]
 #![feature(rustc_private)]
+#![feature(set_recovery)]
+#![feature(slice_bytes)]
+#![feature(slice_splits)]
+#![feature(step_by)]
+#![feature(str_char)]
+#![feature(str_escape)]
+#![feature(str_match_indices)]
+#![feature(str_utf16)]
 #![feature(test)]
 #![feature(unboxed_closures)]
 #![feature(unicode)]
-#![feature(into_cow)]
-#![feature(step_by)]
-#![cfg_attr(test, feature(str_char))]
-#![cfg_attr(test, feature(vec_deque_retain))]
+#![feature(vec_push_all)]
 
 #[macro_use] extern crate log;
 
@@ -31,10 +44,11 @@ extern crate collections;
 extern crate test;
 extern crate rustc_unicode;
 
+use std::hash::{Hash, Hasher, SipHasher};
+
 #[cfg(test)] #[macro_use] mod bench;
 
 mod binary_heap;
-mod bit;
 mod btree;
 mod enum_set;
 mod fmt;
@@ -43,5 +57,10 @@ mod slice;
 mod str;
 mod string;
 mod vec_deque;
-mod vec_map;
 mod vec;
+
+fn hash<T: Hash>(t: &T) -> u64 {
+    let mut s = SipHasher::new();
+    t.hash(&mut s);
+    s.finish()
+}

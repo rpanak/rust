@@ -11,29 +11,27 @@
 // Do not remove on snapshot creation. Needed for bootstrap. (Issue #22364)
 #![cfg_attr(stage0, feature(custom_attribute))]
 #![crate_name = "rustdoc"]
-#![unstable(feature = "rustdoc")]
+#![unstable(feature = "rustdoc", issue = "27812")]
 #![staged_api]
 #![crate_type = "dylib"]
 #![crate_type = "rlib"]
-#![doc(html_logo_url = "http://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
+#![doc(html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
    html_favicon_url = "https://doc.rust-lang.org/favicon.ico",
-   html_root_url = "http://doc.rust-lang.org/nightly/",
-   html_playground_url = "http://play.rust-lang.org/")]
+   html_root_url = "https://doc.rust-lang.org/nightly/",
+   html_playground_url = "https://play.rust-lang.org/")]
 
 #![feature(box_patterns)]
 #![feature(box_syntax)]
-#![feature(collections)]
-#![feature(exit_status)]
-#![feature(set_stdio)]
+#![feature(dynamic_lib)]
 #![feature(libc)]
+#![feature(path_relative_from)]
 #![feature(rustc_private)]
+#![feature(set_stdio)]
+#![feature(slice_patterns)]
 #![feature(staged_api)]
-#![feature(std_misc)]
 #![feature(test)]
 #![feature(unicode)]
-#![feature(path_ext)]
-#![feature(path_relative_from)]
-#![feature(slice_patterns)]
+#![feature(vec_push_all)]
 
 extern crate arena;
 extern crate getopts;
@@ -44,6 +42,7 @@ extern crate rustc_driver;
 extern crate rustc_resolve;
 extern crate rustc_lint;
 extern crate rustc_back;
+extern crate rustc_front;
 extern crate serialize;
 extern crate syntax;
 extern crate test as testing;
@@ -58,6 +57,7 @@ use std::env;
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
+use std::process;
 use std::rc::Rc;
 use std::sync::mpsc::channel;
 
@@ -65,6 +65,7 @@ use externalfiles::ExternalHtml;
 use serialize::Decodable;
 use serialize::json::{self, Json};
 use rustc::session::search_paths::SearchPaths;
+use syntax::diagnostic;
 
 // reexported from `clean` so it can be easily updated with the mod itself
 pub use clean::SCHEMA_VERSION;
@@ -130,8 +131,8 @@ pub fn main() {
     let res = std::thread::Builder::new().stack_size(STACK_SIZE).spawn(move || {
         let s = env::args().collect::<Vec<_>>();
         main_args(&s)
-    }).unwrap().join().unwrap();
-    env::set_exit_status(res as i32);
+    }).unwrap().join().unwrap_or(101);
+    process::exit(res as i32);
 }
 
 pub fn opts() -> Vec<getopts::OptGroup> {
@@ -189,7 +190,7 @@ pub fn usage(argv0: &str) {
 }
 
 pub fn main_args(args: &[String]) -> isize {
-    let matches = match getopts::getopts(args.tail(), &opts()) {
+    let matches = match getopts::getopts(&args[1..], &opts()) {
         Ok(m) => m,
         Err(err) => {
             println!("{}", err);
@@ -209,7 +210,7 @@ pub fn main_args(args: &[String]) -> isize {
         for &(name, _, description) in PASSES {
             println!("{:>20} - {}", name, description);
         }
-        println!("{}", "\nDefault passes for rustdoc:"); // FIXME: #9970
+        println!("\nDefault passes for rustdoc:");
         for &name in DEFAULT_PASSES {
             println!("{:>20}", name);
         }
@@ -227,7 +228,7 @@ pub fn main_args(args: &[String]) -> isize {
 
     let mut libs = SearchPaths::new();
     for s in &matches.opt_strs("L") {
-        libs.add_path(s);
+        libs.add_path(s, diagnostic::Auto);
     }
     let externs = match parse_externs(&matches) {
         Ok(ex) => ex,
@@ -271,7 +272,6 @@ pub fn main_args(args: &[String]) -> isize {
                                                  !matches.opt_present("markdown-no-toc")),
         (false, false) => {}
     }
-
     let out = match acquire_input(input, externs, &matches) {
         Ok(out) => out,
         Err(s) => {
@@ -355,7 +355,6 @@ fn parse_externs(matches: &getopts::Matches) -> Result<core::Externs, String> {
 /// generated from the cleaned AST of the crate.
 ///
 /// This form of input will run all of the plug/cleaning passes
-#[allow(deprecated)] // for old Path in plugin manager
 fn rust_input(cratefile: &str, externs: core::Externs, matches: &getopts::Matches) -> Output {
     let mut default_passes = !matches.opt_present("no-defaults");
     let mut passes = matches.opt_strs("passes");
@@ -364,7 +363,7 @@ fn rust_input(cratefile: &str, externs: core::Externs, matches: &getopts::Matche
     // First, parse the crate and extract all relevant information.
     let mut paths = SearchPaths::new();
     for s in &matches.opt_strs("L") {
-        paths.add_path(s);
+        paths.add_path(s, diagnostic::Auto);
     }
     let cfgs = matches.opt_strs("cfg");
     let triple = matches.opt_str("target");
@@ -373,12 +372,12 @@ fn rust_input(cratefile: &str, externs: core::Externs, matches: &getopts::Matche
     info!("starting to run rustc");
 
     let (tx, rx) = channel();
-    std::thread::spawn(move || {
+    rustc_driver::monitor(move || {
         use rustc::session::config::Input;
 
         tx.send(core::run_core(paths, cfgs, externs, Input::File(cr),
                                triple)).unwrap();
-    }).join().map_err(|_| "rustc failed").unwrap();
+    });
     let (mut krate, analysis) = rx.recv().unwrap();
     info!("finished with rustc");
     let mut analysis = Some(analysis);

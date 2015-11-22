@@ -9,11 +9,12 @@
 // except according to those terms.
 
 //! Exposes the NonZero lang item which provides optimization hints.
+#![unstable(feature = "nonzero",
+            reason = "needs an RFC to flesh out the design",
+            issue = "27730")]
 
 use marker::Sized;
-use ops::Deref;
-#[cfg(not(stage0))]
-use ops::CoerceUnsized;
+use ops::{CoerceUnsized, Deref};
 
 /// Unsafe trait to indicate what types are usable with the NonZero struct
 pub unsafe trait Zeroable {}
@@ -35,27 +36,43 @@ unsafe impl Zeroable for u64 {}
 /// NULL or 0 that might allow certain optimizations.
 #[lang = "non_zero"]
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Debug, Hash)]
-#[unstable(feature = "core")]
 pub struct NonZero<T: Zeroable>(T);
 
+#[cfg(stage0)]
+macro_rules! nonzero_new {
+    () => (
+        /// Creates an instance of NonZero with the provided value.
+        /// You must indeed ensure that the value is actually "non-zero".
+        #[inline(always)]
+        pub unsafe fn new(inner: T) -> NonZero<T> {
+            NonZero(inner)
+        }
+    )
+}
+#[cfg(not(stage0))]
+macro_rules! nonzero_new {
+    () => (
+        /// Creates an instance of NonZero with the provided value.
+        /// You must indeed ensure that the value is actually "non-zero".
+        #[inline(always)]
+        pub const unsafe fn new(inner: T) -> NonZero<T> {
+            NonZero(inner)
+        }
+    )
+}
+
 impl<T: Zeroable> NonZero<T> {
-    /// Creates an instance of NonZero with the provided value.
-    /// You must indeed ensure that the value is actually "non-zero".
-    #[inline(always)]
-    pub unsafe fn new(inner: T) -> NonZero<T> {
-        NonZero(inner)
-    }
+    nonzero_new!{}
 }
 
 impl<T: Zeroable> Deref for NonZero<T> {
     type Target = T;
 
     #[inline]
-    fn deref<'a>(&'a self) -> &'a T {
+    fn deref(&self) -> &T {
         let NonZero(ref inner) = *self;
         inner
     }
 }
 
-#[cfg(not(stage0))]
 impl<T: Zeroable+CoerceUnsized<U>, U: Zeroable> CoerceUnsized<NonZero<U>> for NonZero<T> {}

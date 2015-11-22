@@ -10,6 +10,7 @@
 
 use attr::AttrMetaMethods;
 use diagnostic::SpanHandler;
+use feature_gate::GatedCfg;
 use fold::Folder;
 use {ast, fold, attr};
 use codemap::{Spanned, respan};
@@ -25,10 +26,13 @@ struct Context<F> where F: FnMut(&[ast::Attribute]) -> bool {
 
 // Support conditional compilation by transforming the AST, stripping out
 // any items that do not belong in the current configuration
-pub fn strip_unconfigured_items(diagnostic: &SpanHandler, krate: ast::Crate) -> ast::Crate {
-    let krate = process_cfg_attr(diagnostic, krate);
+pub fn strip_unconfigured_items(diagnostic: &SpanHandler, krate: ast::Crate,
+                                feature_gated_cfgs: &mut Vec<GatedCfg>)
+                                -> ast::Crate
+{
+    let krate = process_cfg_attr(diagnostic, krate, feature_gated_cfgs);
     let config = krate.config.clone();
-    strip_items(krate, |attrs| in_cfg(diagnostic, &config, attrs))
+    strip_items(krate, |attrs| in_cfg(diagnostic, &config, attrs, feature_gated_cfgs))
 }
 
 impl<F> fold::Folder for Context<F> where F: FnMut(&[ast::Attribute]) -> bool {
@@ -82,7 +86,7 @@ fn filter_foreign_item<F>(cx: &mut Context<F>,
                           -> Option<P<ast::ForeignItem>> where
     F: FnMut(&[ast::Attribute]) -> bool
 {
-    if foreign_item_in_cfg(cx, &*item) {
+    if foreign_item_in_cfg(cx, &item) {
         Some(item)
     } else {
         None
@@ -105,7 +109,7 @@ fn fold_foreign_mod<F>(cx: &mut Context<F>,
 fn fold_item<F>(cx: &mut Context<F>, item: P<ast::Item>) -> SmallVector<P<ast::Item>> where
     F: FnMut(&[ast::Attribute]) -> bool
 {
-    if item_in_cfg(cx, &*item) {
+    if item_in_cfg(cx, &item) {
         SmallVector::one(item.map(|i| cx.fold_item_simple(i)))
     } else {
         SmallVector::zero()
@@ -136,21 +140,14 @@ fn fold_item_underscore<F>(cx: &mut Context<F>, item: ast::Item_) -> ast::Item_ 
                 if !(cx.in_cfg)(&v.node.attrs) {
                     None
                 } else {
-                    Some(v.map(|Spanned {node: ast::Variant_ {id, name, attrs, kind,
-                                                              disr_expr, vis}, span}| {
+                    Some(v.map(|Spanned {node: ast::Variant_ {name, attrs, data,
+                                                              disr_expr}, span}| {
                         Spanned {
                             node: ast::Variant_ {
-                                id: id,
                                 name: name,
                                 attrs: attrs,
-                                kind: match kind {
-                                    ast::TupleVariantKind(..) => kind,
-                                    ast::StructVariantKind(def) => {
-                                        ast::StructVariantKind(fold_struct(cx, def))
-                                    }
-                                },
+                                data: fold_struct(cx, data),
                                 disr_expr: disr_expr,
-                                vis: vis
                             },
                             span: span
                         }
@@ -167,17 +164,22 @@ fn fold_item_underscore<F>(cx: &mut Context<F>, item: ast::Item_) -> ast::Item_ 
     fold::noop_fold_item_underscore(item, cx)
 }
 
-fn fold_struct<F>(cx: &mut Context<F>, def: P<ast::StructDef>) -> P<ast::StructDef> where
+fn fold_struct<F>(cx: &mut Context<F>, vdata: ast::VariantData) -> ast::VariantData where
     F: FnMut(&[ast::Attribute]) -> bool
 {
-    def.map(|ast::StructDef { fields, ctor_id }| {
-        ast::StructDef {
-            fields: fields.into_iter().filter(|m| {
+    match vdata {
+        ast::VariantData::Struct(fields, id) => {
+            ast::VariantData::Struct(fields.into_iter().filter(|m| {
                 (cx.in_cfg)(&m.node.attrs)
-            }).collect(),
-            ctor_id: ctor_id,
+            }).collect(), id)
         }
-    })
+        ast::VariantData::Tuple(fields, id) => {
+            ast::VariantData::Tuple(fields.into_iter().filter(|m| {
+                (cx.in_cfg)(&m.node.attrs)
+            }).collect(), id)
+        }
+        ast::VariantData::Unit(id) => ast::VariantData::Unit(id)
+    }
 }
 
 fn retain_stmt<F>(cx: &mut Context<F>, stmt: &ast::Stmt) -> bool where
@@ -187,7 +189,7 @@ fn retain_stmt<F>(cx: &mut Context<F>, stmt: &ast::Stmt) -> bool where
         ast::StmtDecl(ref decl, _) => {
             match decl.node {
                 ast::DeclItem(ref item) => {
-                    item_in_cfg(cx, &**item)
+                    item_in_cfg(cx, item)
                 }
                 _ => true
             }
@@ -201,7 +203,7 @@ fn fold_block<F>(cx: &mut Context<F>, b: P<ast::Block>) -> P<ast::Block> where
 {
     b.map(|ast::Block {id, stmts, expr, rules, span}| {
         let resulting_stmts: Vec<P<ast::Stmt>> =
-            stmts.into_iter().filter(|a| retain_stmt(cx, &**a)).collect();
+            stmts.into_iter().filter(|a| retain_stmt(cx, a)).collect();
         let resulting_stmts = resulting_stmts.into_iter()
             .flat_map(|stmt| cx.fold_stmt(stmt).into_iter())
             .collect();
@@ -222,10 +224,10 @@ fn fold_expr<F>(cx: &mut Context<F>, expr: P<ast::Expr>) -> P<ast::Expr> where
         fold::noop_fold_expr(ast::Expr {
             id: id,
             node: match node {
-                ast::ExprMatch(m, arms, source) => {
+                ast::ExprMatch(m, arms) => {
                     ast::ExprMatch(m, arms.into_iter()
                                         .filter(|a| (cx.in_cfg)(&a.attrs))
-                                        .collect(), source)
+                                        .collect())
                 }
                 _ => node
             },
@@ -248,7 +250,8 @@ fn foreign_item_in_cfg<F>(cx: &mut Context<F>, item: &ast::ForeignItem) -> bool 
 
 // Determine if an item should be translated in the current crate
 // configuration based on the item's attributes
-fn in_cfg(diagnostic: &SpanHandler, cfg: &[P<ast::MetaItem>], attrs: &[ast::Attribute]) -> bool {
+fn in_cfg(diagnostic: &SpanHandler, cfg: &[P<ast::MetaItem>], attrs: &[ast::Attribute],
+          feature_gated_cfgs: &mut Vec<GatedCfg>) -> bool {
     attrs.iter().all(|attr| {
         let mis = match attr.node.value.node {
             ast::MetaList(_, ref mis) if attr.check_name("cfg") => mis,
@@ -260,25 +263,29 @@ fn in_cfg(diagnostic: &SpanHandler, cfg: &[P<ast::MetaItem>], attrs: &[ast::Attr
             return true;
         }
 
-        attr::cfg_matches(diagnostic, cfg, &*mis[0])
+        attr::cfg_matches(diagnostic, cfg, &mis[0],
+                          feature_gated_cfgs)
     })
 }
 
-struct CfgAttrFolder<'a> {
+struct CfgAttrFolder<'a, 'b> {
     diag: &'a SpanHandler,
     config: ast::CrateConfig,
+    feature_gated_cfgs: &'b mut Vec<GatedCfg>
 }
 
 // Process `#[cfg_attr]`.
-fn process_cfg_attr(diagnostic: &SpanHandler, krate: ast::Crate) -> ast::Crate {
+fn process_cfg_attr(diagnostic: &SpanHandler, krate: ast::Crate,
+                    feature_gated_cfgs: &mut Vec<GatedCfg>) -> ast::Crate {
     let mut fld = CfgAttrFolder {
         diag: diagnostic,
         config: krate.config.clone(),
+        feature_gated_cfgs: feature_gated_cfgs,
     };
     fld.fold_crate(krate)
 }
 
-impl<'a> fold::Folder for CfgAttrFolder<'a> {
+impl<'a,'b> fold::Folder for CfgAttrFolder<'a,'b> {
     fn fold_attribute(&mut self, attr: ast::Attribute) -> Option<ast::Attribute> {
         if !attr.check_name("cfg_attr") {
             return fold::noop_fold_attribute(attr, self);
@@ -299,7 +306,8 @@ impl<'a> fold::Folder for CfgAttrFolder<'a> {
             }
         };
 
-        if attr::cfg_matches(self.diag, &self.config[..], &cfg) {
+        if attr::cfg_matches(self.diag, &self.config[..], &cfg,
+                             self.feature_gated_cfgs) {
             Some(respan(mi.span, ast::Attribute_ {
                 id: attr::mk_attr_id(),
                 style: attr.node.style,

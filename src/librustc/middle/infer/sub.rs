@@ -10,17 +10,17 @@
 
 use super::combine::{self, CombineFields};
 use super::higher_ranked::HigherRankedRelations;
-use super::Subtype;
+use super::SubregionOrigin;
 use super::type_variable::{SubtypeOf, SupertypeOf};
 
 use middle::ty::{self, Ty};
 use middle::ty::TyVar;
-use middle::ty_relate::{Relate, RelateResult, TypeRelation};
-use util::ppaux::{Repr};
+use middle::ty::relate::{Cause, Relate, RelateResult, TypeRelation};
+use std::mem;
 
-/// "Greatest lower bound" (common subtype)
+/// Ensures `a` is made a subtype of `b`. Returns `a` on success.
 pub struct Sub<'a, 'tcx: 'a> {
-    fields: CombineFields<'a, 'tcx>
+    fields: CombineFields<'a, 'tcx>,
 }
 
 impl<'a, 'tcx> Sub<'a, 'tcx> {
@@ -33,6 +33,17 @@ impl<'a, 'tcx> TypeRelation<'a, 'tcx> for Sub<'a, 'tcx> {
     fn tag(&self) -> &'static str { "Sub" }
     fn tcx(&self) -> &'a ty::ctxt<'tcx> { self.fields.infcx.tcx }
     fn a_is_expected(&self) -> bool { self.fields.a_is_expected }
+
+    fn with_cause<F,R>(&mut self, cause: Cause, f: F) -> R
+        where F: FnOnce(&mut Self) -> R
+    {
+        debug!("sub with_cause={:?}", cause);
+        let old_cause = mem::replace(&mut self.fields.cause, Some(cause));
+        let r = f(self);
+        debug!("sub old_cause={:?}", old_cause);
+        self.fields.cause = old_cause;
+        r
+    }
 
     fn relate_with_variance<T:Relate<'a,'tcx>>(&mut self,
                                                variance: ty::Variance,
@@ -49,7 +60,7 @@ impl<'a, 'tcx> TypeRelation<'a, 'tcx> for Sub<'a, 'tcx> {
     }
 
     fn tys(&mut self, a: Ty<'tcx>, b: Ty<'tcx>) -> RelateResult<'tcx, Ty<'tcx>> {
-        debug!("{}.tys({}, {})", self.tag(), a.repr(self.tcx()), b.repr(self.tcx()));
+        debug!("{}.tys({:?}, {:?})", self.tag(), a, b);
 
         if a == b { return Ok(a); }
 
@@ -57,39 +68,41 @@ impl<'a, 'tcx> TypeRelation<'a, 'tcx> for Sub<'a, 'tcx> {
         let a = infcx.type_variables.borrow().replace_if_possible(a);
         let b = infcx.type_variables.borrow().replace_if_possible(b);
         match (&a.sty, &b.sty) {
-            (&ty::ty_infer(TyVar(a_id)), &ty::ty_infer(TyVar(b_id))) => {
+            (&ty::TyInfer(TyVar(a_id)), &ty::TyInfer(TyVar(b_id))) => {
                 infcx.type_variables
                     .borrow_mut()
                     .relate_vars(a_id, SubtypeOf, b_id);
                 Ok(a)
             }
-            (&ty::ty_infer(TyVar(a_id)), _) => {
+            (&ty::TyInfer(TyVar(a_id)), _) => {
                 try!(self.fields
                          .switch_expected()
                          .instantiate(b, SupertypeOf, a_id));
                 Ok(a)
             }
-            (_, &ty::ty_infer(TyVar(b_id))) => {
+            (_, &ty::TyInfer(TyVar(b_id))) => {
                 try!(self.fields.instantiate(a, SubtypeOf, b_id));
                 Ok(a)
             }
 
-            (&ty::ty_err, _) | (_, &ty::ty_err) => {
+            (&ty::TyError, _) | (_, &ty::TyError) => {
                 Ok(self.tcx().types.err)
             }
 
             _ => {
-                combine::super_combine_tys(self.fields.infcx, self, a, b)
+                try!(combine::super_combine_tys(self.fields.infcx, self, a, b));
+                Ok(a)
             }
         }
     }
 
     fn regions(&mut self, a: ty::Region, b: ty::Region) -> RelateResult<'tcx, ty::Region> {
-        debug!("{}.regions({}, {})",
-               self.tag(),
-               a.repr(self.tcx()),
-               b.repr(self.tcx()));
-        let origin = Subtype(self.fields.trace.clone());
+        debug!("{}.regions({:?}, {:?}) self.cause={:?}",
+               self.tag(), a, b, self.fields.cause);
+        // FIXME -- we have more fine-grained information available
+        // from the "cause" field, we could perhaps give more tailored
+        // error messages.
+        let origin = SubregionOrigin::Subtype(self.fields.trace.clone());
         self.fields.infcx.region_vars.make_subregion(origin, a, b);
         Ok(a)
     }

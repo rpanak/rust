@@ -10,13 +10,12 @@
 
 //! Operations and constants for 64-bits floats (`f64` type)
 
-#![doc(primitive = "f64")]
 // FIXME: MIN_VALUE and MAX_VALUE literals are parsed as -inf and inf #14353
 #![allow(overflowing_literals)]
 
 #![stable(feature = "rust1", since = "1.0.0")]
 
-use prelude::*;
+use prelude::v1::*;
 
 use intrinsics;
 use mem;
@@ -24,14 +23,18 @@ use num::FpCategory as Fp;
 use num::{Float, ParseFloatError};
 
 #[stable(feature = "rust1", since = "1.0.0")]
+#[allow(missing_docs)]
 pub const RADIX: u32 = 2;
 
 #[stable(feature = "rust1", since = "1.0.0")]
+#[allow(missing_docs)]
 pub const MANTISSA_DIGITS: u32 = 53;
 #[stable(feature = "rust1", since = "1.0.0")]
+#[allow(missing_docs)]
 pub const DIGITS: u32 = 15;
 
 #[stable(feature = "rust1", since = "1.0.0")]
+#[allow(missing_docs)]
 pub const EPSILON: f64 = 2.2204460492503131e-16_f64;
 
 /// Smallest finite f64 value
@@ -45,23 +48,30 @@ pub const MIN_POSITIVE: f64 = 2.2250738585072014e-308_f64;
 pub const MAX: f64 = 1.7976931348623157e+308_f64;
 
 #[stable(feature = "rust1", since = "1.0.0")]
+#[allow(missing_docs)]
 pub const MIN_EXP: i32 = -1021;
 #[stable(feature = "rust1", since = "1.0.0")]
+#[allow(missing_docs)]
 pub const MAX_EXP: i32 = 1024;
 
 #[stable(feature = "rust1", since = "1.0.0")]
+#[allow(missing_docs)]
 pub const MIN_10_EXP: i32 = -307;
 #[stable(feature = "rust1", since = "1.0.0")]
+#[allow(missing_docs)]
 pub const MAX_10_EXP: i32 = 308;
 
 #[stable(feature = "rust1", since = "1.0.0")]
+#[allow(missing_docs)]
 pub const NAN: f64 = 0.0_f64/0.0_f64;
 #[stable(feature = "rust1", since = "1.0.0")]
+#[allow(missing_docs)]
 pub const INFINITY: f64 = 1.0_f64/0.0_f64;
 #[stable(feature = "rust1", since = "1.0.0")]
+#[allow(missing_docs)]
 pub const NEG_INFINITY: f64 = -1.0_f64/0.0_f64;
 
-/// Basic mathematial constants.
+/// Basic mathematical constants.
 #[stable(feature = "rust1", since = "1.0.0")]
 pub mod consts {
     // FIXME: replace with mathematical constants from cmath.
@@ -69,10 +79,6 @@ pub mod consts {
     /// Archimedes' constant
     #[stable(feature = "rust1", since = "1.0.0")]
     pub const PI: f64 = 3.14159265358979323846264338327950288_f64;
-
-    /// pi * 2.0
-    #[unstable(feature = "core", reason = "unclear naming convention/usefulness")]
-    pub const PI_2: f64 = 6.28318530717958647692528676655900576_f64;
 
     /// pi/2.0
     #[stable(feature = "rust1", since = "1.0.0")]
@@ -135,7 +141,9 @@ pub mod consts {
     pub const LN_10: f64 = 2.30258509299404568401799145468436421_f64;
 }
 
-#[unstable(feature = "core", reason = "trait is unstable")]
+#[unstable(feature = "core_float",
+           reason = "stable interface is via `impl f{32,64}` in later crates",
+           issue = "27702")]
 impl Float for f64 {
     #[inline]
     fn nan() -> f64 { NAN }
@@ -211,39 +219,6 @@ impl Float for f64 {
         (mantissa, exponent, sign)
     }
 
-    /// Rounds towards minus infinity.
-    #[inline]
-    fn floor(self) -> f64 {
-        unsafe { intrinsics::floorf64(self) }
-    }
-
-    /// Rounds towards plus infinity.
-    #[inline]
-    fn ceil(self) -> f64 {
-        unsafe { intrinsics::ceilf64(self) }
-    }
-
-    /// Rounds to nearest integer. Rounds half-way cases away from zero.
-    #[inline]
-    fn round(self) -> f64 {
-        unsafe { intrinsics::roundf64(self) }
-    }
-
-    /// Returns the integer part of the number (rounds towards zero).
-    #[inline]
-    fn trunc(self) -> f64 {
-        unsafe { intrinsics::truncf64(self) }
-    }
-
-    /// The fractional part of the number, satisfying:
-    ///
-    /// ```
-    /// let x = 1.65f64;
-    /// assert!(x == x.trunc() + x.fract())
-    /// ```
-    #[inline]
-    fn fract(self) -> f64 { self - self.trunc() }
-
     /// Computes the absolute value of `self`. Returns `Float::nan()` if the
     /// number is `Float::nan()`.
     #[inline]
@@ -279,72 +254,13 @@ impl Float for f64 {
         self < 0.0 || (1.0 / self) == Float::neg_infinity()
     }
 
-    /// Fused multiply-add. Computes `(self * a) + b` with only one rounding
-    /// error. This produces a more accurate result with better performance than
-    /// a separate multiplication operation followed by an add.
-    #[inline]
-    fn mul_add(self, a: f64, b: f64) -> f64 {
-        unsafe { intrinsics::fmaf64(self, a, b) }
-    }
-
     /// Returns the reciprocal (multiplicative inverse) of the number.
     #[inline]
     fn recip(self) -> f64 { 1.0 / self }
 
     #[inline]
-    fn powf(self, n: f64) -> f64 {
-        unsafe { intrinsics::powf64(self, n) }
-    }
-
-    #[inline]
     fn powi(self, n: i32) -> f64 {
         unsafe { intrinsics::powif64(self, n) }
-    }
-
-    #[inline]
-    fn sqrt(self) -> f64 {
-        if self < 0.0 {
-            NAN
-        } else {
-            unsafe { intrinsics::sqrtf64(self) }
-        }
-    }
-
-    #[inline]
-    fn rsqrt(self) -> f64 { self.sqrt().recip() }
-
-    /// Returns the exponential of the number.
-    #[inline]
-    fn exp(self) -> f64 {
-        unsafe { intrinsics::expf64(self) }
-    }
-
-    /// Returns 2 raised to the power of the number.
-    #[inline]
-    fn exp2(self) -> f64 {
-        unsafe { intrinsics::exp2f64(self) }
-    }
-
-    /// Returns the natural logarithm of the number.
-    #[inline]
-    fn ln(self) -> f64 {
-        unsafe { intrinsics::logf64(self) }
-    }
-
-    /// Returns the logarithm of the number with respect to an arbitrary base.
-    #[inline]
-    fn log(self, base: f64) -> f64 { self.ln() / base.ln() }
-
-    /// Returns the base 2 logarithm of the number.
-    #[inline]
-    fn log2(self) -> f64 {
-        unsafe { intrinsics::log2f64(self) }
-    }
-
-    /// Returns the base 10 logarithm of the number.
-    #[inline]
-    fn log10(self) -> f64 {
-        unsafe { intrinsics::log10f64(self) }
     }
 
     /// Converts to degrees, assuming the number is in radians.

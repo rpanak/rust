@@ -9,9 +9,9 @@
 // except according to those terms.
 
 
-#![feature(hash)]
+#![feature(hash_default)]
 
-use std::hash::{Hash, SipHasher};
+use std::hash::{Hash, SipHasher, Hasher};
 
 #[derive(Hash)]
 struct Person {
@@ -21,7 +21,9 @@ struct Person {
 }
 
 fn hash<T: Hash>(t: &T) -> u64 {
-    std::hash::hash::<T, SipHasher>(t)
+    let mut s = SipHasher::new_with_keys(0, 0);
+    t.hash(&mut s);
+    s.finish()
 }
 
 fn main() {
@@ -35,6 +37,6 @@ fn main() {
         name: "Bob".to_string(),
         phone: 555_666_7777
     };
-    assert!(hash(&person1) == hash(&person1));
+    assert_eq!(hash(&person1), hash(&person1));
     assert!(hash(&person1) != hash(&person2));
 }

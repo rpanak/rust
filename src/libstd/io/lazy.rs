@@ -10,32 +10,32 @@
 
 use prelude::v1::*;
 
-use boxed;
-use cell::UnsafeCell;
-use rt;
+use cell::Cell;
+use ptr;
 use sync::{StaticMutex, Arc};
+use sys_common;
 
 pub struct Lazy<T> {
-    pub lock: StaticMutex,
-    pub ptr: UnsafeCell<*mut Arc<T>>,
-    pub init: fn() -> Arc<T>,
+    lock: StaticMutex,
+    ptr: Cell<*mut Arc<T>>,
+    init: fn() -> Arc<T>,
 }
 
 unsafe impl<T> Sync for Lazy<T> {}
 
-macro_rules! lazy_init {
-    ($init:expr) => (::io::lazy::Lazy {
-        lock: ::sync::MUTEX_INIT,
-        ptr: ::cell::UnsafeCell { value: 0 as *mut _ },
-        init: $init,
-    })
-}
-
 impl<T: Send + Sync + 'static> Lazy<T> {
+    pub const fn new(init: fn() -> Arc<T>) -> Lazy<T> {
+        Lazy {
+            lock: StaticMutex::new(),
+            ptr: Cell::new(ptr::null_mut()),
+            init: init
+        }
+    }
+
     pub fn get(&'static self) -> Option<Arc<T>> {
         let _g = self.lock.lock();
+        let ptr = self.ptr.get();
         unsafe {
-            let ptr = *self.ptr.get();
             if ptr.is_null() {
                 Some(self.init())
             } else if ptr as usize == 1 {
@@ -51,17 +51,17 @@ impl<T: Send + Sync + 'static> Lazy<T> {
         // `Arc` allocation in our own internal box (it will get deallocated by
         // the at exit handler). Otherwise we just return the freshly allocated
         // `Arc`.
-        let registered = rt::at_exit(move || {
+        let registered = sys_common::at_exit(move || {
             let g = self.lock.lock();
-            let ptr = *self.ptr.get();
-            *self.ptr.get() = 1 as *mut _;
+            let ptr = self.ptr.get();
+            self.ptr.set(1 as *mut _);
             drop(g);
             drop(Box::from_raw(ptr))
         });
         let ret = (self.init)();
         if registered.is_ok() {
-            *self.ptr.get() = boxed::into_raw(Box::new(ret.clone()));
+            self.ptr.set(Box::into_raw(Box::new(ret.clone())));
         }
-        return ret
+        ret
     }
 }

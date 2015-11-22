@@ -16,54 +16,59 @@
 
 use middle::def;
 use middle::ty::{self, Ty};
-use syntax::ast;
-use util::ppaux::Repr;
 
-pub const NO_REGIONS: usize = 1;
-pub const NO_TPS: usize = 2;
+use syntax::codemap::Span;
+use rustc_front::hir as ast;
 
-pub fn check_path_args(tcx: &ty::ctxt, segments: &[ast::PathSegment], flags: usize) {
+pub fn prohibit_type_params(tcx: &ty::ctxt, segments: &[ast::PathSegment]) {
     for segment in segments {
-        if (flags & NO_TPS) != 0 {
-            for typ in segment.parameters.types() {
-                span_err!(tcx.sess, typ.span, E0109,
-                          "type parameters are not allowed on this type");
-                break;
-            }
+        for typ in segment.parameters.types() {
+            span_err!(tcx.sess, typ.span, E0109,
+                      "type parameters are not allowed on this type");
+            break;
         }
-
-        if (flags & NO_REGIONS) != 0 {
-            for lifetime in segment.parameters.lifetimes() {
-                span_err!(tcx.sess, lifetime.span, E0110,
-                          "lifetime parameters are not allowed on this type");
-                break;
-            }
+        for lifetime in segment.parameters.lifetimes() {
+            span_err!(tcx.sess, lifetime.span, E0110,
+                      "lifetime parameters are not allowed on this type");
+            break;
+        }
+        for binding in segment.parameters.bindings() {
+            prohibit_projection(tcx, binding.span);
+            break;
         }
     }
+}
+
+pub fn prohibit_projection(tcx: &ty::ctxt, span: Span)
+{
+    span_err!(tcx.sess, span, E0229,
+              "associated type bindings are not allowed here");
 }
 
 pub fn prim_ty_to_ty<'tcx>(tcx: &ty::ctxt<'tcx>,
                            segments: &[ast::PathSegment],
                            nty: ast::PrimTy)
                            -> Ty<'tcx> {
-    check_path_args(tcx, segments, NO_TPS | NO_REGIONS);
+    prohibit_type_params(tcx, segments);
     match nty {
         ast::TyBool => tcx.types.bool,
         ast::TyChar => tcx.types.char,
-        ast::TyInt(it) => ty::mk_mach_int(tcx, it),
-        ast::TyUint(uit) => ty::mk_mach_uint(tcx, uit),
-        ast::TyFloat(ft) => ty::mk_mach_float(tcx, ft),
-        ast::TyStr => ty::mk_str(tcx)
+        ast::TyInt(it) => tcx.mk_mach_int(it),
+        ast::TyUint(uit) => tcx.mk_mach_uint(uit),
+        ast::TyFloat(ft) => tcx.mk_mach_float(ft),
+        ast::TyStr => tcx.mk_str()
     }
 }
 
+/// If a type in the AST is a primitive type, return the ty::Ty corresponding
+/// to it.
 pub fn ast_ty_to_prim_ty<'tcx>(tcx: &ty::ctxt<'tcx>, ast_ty: &ast::Ty)
                                -> Option<Ty<'tcx>> {
     if let ast::TyPath(None, ref path) = ast_ty.node {
         let def = match tcx.def_map.borrow().get(&ast_ty.id) {
             None => {
                 tcx.sess.span_bug(ast_ty.span,
-                                  &format!("unbound path {}", path.repr(tcx)))
+                                  &format!("unbound path {:?}", path))
             }
             Some(d) => d.full_def()
         };

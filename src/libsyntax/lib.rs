@@ -17,25 +17,26 @@
 // Do not remove on snapshot creation. Needed for bootstrap. (Issue #22364)
 #![cfg_attr(stage0, feature(custom_attribute))]
 #![crate_name = "syntax"]
-#![unstable(feature = "rustc_private")]
+#![unstable(feature = "rustc_private", issue = "27812")]
 #![staged_api]
 #![crate_type = "dylib"]
 #![crate_type = "rlib"]
-#![doc(html_logo_url = "http://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
+#![doc(html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
        html_favicon_url = "https://doc.rust-lang.org/favicon.ico",
-       html_root_url = "http://doc.rust-lang.org/nightly/")]
+       html_root_url = "https://doc.rust-lang.org/nightly/",
+       test(attr(deny(warnings))))]
 
 #![feature(associated_consts)]
-#![feature(collections)]
-#![feature(collections_drain)]
-#![feature(core)]
+#![feature(drain)]
+#![feature(filling_drop)]
 #![feature(libc)]
 #![feature(rustc_private)]
 #![feature(staged_api)]
 #![feature(str_char)]
+#![feature(str_escape)]
 #![feature(unicode)]
+#![feature(vec_push_all)]
 
-extern crate arena;
 extern crate fmt_macros;
 extern crate serialize;
 extern crate term;
@@ -62,6 +63,8 @@ macro_rules! panictry {
 
 pub mod util {
     pub mod interner;
+    pub mod node_count;
+    pub mod parser;
     #[cfg(test)]
     pub mod parser_testing;
     pub mod small_vector;
@@ -82,12 +85,12 @@ pub mod syntax {
 
 pub mod abi;
 pub mod ast;
-pub mod ast_map;
 pub mod ast_util;
 pub mod attr;
 pub mod codemap;
 pub mod config;
 pub mod diagnostic;
+pub mod entry;
 pub mod feature_gate;
 pub mod fold;
 pub mod owned_slice;

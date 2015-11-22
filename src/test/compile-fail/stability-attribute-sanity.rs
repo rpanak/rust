@@ -13,23 +13,22 @@
 #![feature(staged_api)]
 #![staged_api]
 
+#![stable(feature = "rust1", since = "1.0.0")]
+
 mod bogus_attribute_types_1 {
-    #[stable(feature = "a", since = "a", reason)] //~ ERROR incorrect meta item
+    #[stable(feature = "a", since = "a", reason)] //~ ERROR unknown meta item 'reason'
     fn f1() { }
 
-    #[stable(feature = "a", since, reason = "a")] //~ ERROR incorrect meta item
+    #[stable(feature = "a", since)] //~ ERROR incorrect meta item
     fn f2() { }
 
-    #[stable(feature, since = "a", reason = "a")] //~ ERROR incorrect meta item
+    #[stable(feature, since = "a")] //~ ERROR incorrect meta item
     fn f3() { }
 
-    #[stable(feature = "a", since = "a", reason(b))] //~ ERROR incorrect meta item
-    fn f4() { }
-
-    #[stable(feature = "a", since(b), reason = "a")] //~ ERROR incorrect meta item
+    #[stable(feature = "a", since(b))] //~ ERROR incorrect meta item
     fn f5() { }
 
-    #[stable(feature(b), since = "a", reason = "a")] //~ ERROR incorrect meta item
+    #[stable(feature(b), since = "a")] //~ ERROR incorrect meta item
     fn f6() { }
 }
 
@@ -56,11 +55,14 @@ mod bogus_attribute_types_2 {
 }
 
 mod missing_feature_names {
-    #[unstable(since = "a")] //~ ERROR missing 'feature'
+    #[unstable(issue = "0")] //~ ERROR missing 'feature'
     fn f1() { }
 
-    #[stable(since = "a")] //~ ERROR missing 'feature'
+    #[unstable(feature = "a")] //~ ERROR missing 'issue'
     fn f2() { }
+
+    #[stable(since = "a")] //~ ERROR missing 'feature'
+    fn f3() { }
 }
 
 mod missing_version {
@@ -72,12 +74,12 @@ mod missing_version {
     fn f2() { }
 }
 
-#[unstable(feature = "a", since = "b")]
+#[unstable(feature = "a", issue = "0")]
 #[stable(feature = "a", since = "b")]
 fn multiple1() { } //~ ERROR multiple stability levels
 
-#[unstable(feature = "a", since = "b")]
-#[unstable(feature = "a", since = "b")]
+#[unstable(feature = "a", issue = "0")]
+#[unstable(feature = "a", issue = "0")]
 fn multiple2() { } //~ ERROR multiple stability levels
 
 #[stable(feature = "a", since = "b")]
@@ -85,11 +87,12 @@ fn multiple2() { } //~ ERROR multiple stability levels
 fn multiple3() { } //~ ERROR multiple stability levels
 
 #[stable(feature = "a", since = "b")]
-#[deprecated(since = "b")]
-#[deprecated(since = "b")]
+#[deprecated(since = "b", reason = "text")]
+#[deprecated(since = "b", reason = "text")]
 fn multiple4() { } //~ ERROR multiple deprecated attributes
+//~^ ERROR Invalid stability or deprecation version found
 
-#[deprecated(since = "a")]
+#[deprecated(since = "a", reason = "text")]
 fn deprecated_without_unstable_or_stable() { } //~ ERROR deprecated attribute must be paired
 
 fn main() { }

@@ -11,10 +11,11 @@
 use lint;
 use metadata::cstore::CStore;
 use metadata::filesearch;
+use middle::dependency_format;
 use session::search_paths::PathKind;
-use util::nodemap::NodeMap;
+use util::nodemap::{NodeMap, FnvHashMap};
 
-use syntax::ast::NodeId;
+use syntax::ast::{NodeId, NodeIdAssigner, Name};
 use syntax::codemap::Span;
 use syntax::diagnostic::{self, Emitter};
 use syntax::diagnostics;
@@ -23,11 +24,13 @@ use syntax::parse;
 use syntax::parse::token;
 use syntax::parse::ParseSess;
 use syntax::{ast, codemap};
+use syntax::feature_gate::AttributeType;
 
 use rustc_back::target::Target;
 
 use std::path::{Path, PathBuf};
 use std::cell::{Cell, RefCell};
+use std::collections::HashSet;
 use std::env;
 
 pub mod config;
@@ -54,7 +57,9 @@ pub struct Session {
     pub lint_store: RefCell<lint::LintStore>,
     pub lints: RefCell<NodeMap<Vec<(lint::LintId, codemap::Span, String)>>>,
     pub plugin_llvm_passes: RefCell<Vec<String>>,
+    pub plugin_attributes: RefCell<Vec<(String, AttributeType)>>,
     pub crate_types: RefCell<Vec<config::CrateType>>,
+    pub dependency_formats: RefCell<dependency_format::Dependencies>,
     pub crate_metadata: RefCell<Vec<String>>,
     pub features: RefCell<feature_gate::Features>,
 
@@ -66,7 +71,15 @@ pub struct Session {
 
     pub can_print_warnings: bool,
 
-    next_node_id: Cell<ast::NodeId>
+    /// The metadata::creader module may inject an allocator dependency if it
+    /// didn't already find one, and this tracks what was injected.
+    pub injected_allocator: Cell<Option<ast::CrateNum>>,
+
+    /// Names of all bang-style macros and syntax extensions
+    /// available in this crate
+    pub available_macros: RefCell<HashSet<Name>>,
+
+    next_node_id: Cell<ast::NodeId>,
 }
 
 impl Session {
@@ -86,7 +99,14 @@ impl Session {
         if self.opts.treat_err_as_bug {
             self.bug(msg);
         }
-        self.diagnostic().handler().fatal(msg)
+        panic!(self.diagnostic().handler().fatal(msg))
+    }
+    pub fn span_err_or_warn(&self, is_warning: bool, sp: Span, msg: &str) {
+        if is_warning {
+            self.span_warn(sp, msg);
+        } else {
+            self.span_err(sp, msg);
+        }
     }
     pub fn span_err(&self, sp: Span, msg: &str) {
         if self.opts.treat_err_as_bug {
@@ -96,6 +116,13 @@ impl Session {
             Some(msg) => self.diagnostic().span_err(sp, &msg[..]),
             None => self.diagnostic().span_err(sp, msg)
         }
+    }
+    pub fn note_rfc_1214(&self, span: Span) {
+        self.span_note(
+            span,
+            &format!("this warning results from recent bug fixes and clarifications; \
+                      it will become a HARD ERROR in the next release. \
+                      See RFC 1214 for details."));
     }
     pub fn span_err_with_code(&self, sp: Span, msg: &str, code: &str) {
         if self.opts.treat_err_as_bug {
@@ -214,9 +241,6 @@ impl Session {
         }
         lints.insert(id, vec!((lint_id, sp, msg)));
     }
-    pub fn next_node_id(&self) -> ast::NodeId {
-        self.reserve_node_ids(1)
-    }
     pub fn reserve_node_ids(&self, count: ast::NodeId) -> ast::NodeId {
         let id = self.next_node_id.get();
 
@@ -270,6 +294,9 @@ impl Session {
     pub fn print_enum_sizes(&self) -> bool {
         self.opts.debugging_opts.print_enum_sizes
     }
+    pub fn nonzeroing_move_hints(&self) -> bool {
+        self.opts.debugging_opts.enable_nonzeroing_move_hints
+    }
     pub fn sysroot<'a>(&'a self) -> &'a Path {
         match self.opts.maybe_sysroot {
             Some (ref sysroot) => sysroot,
@@ -292,6 +319,16 @@ impl Session {
     }
 }
 
+impl NodeIdAssigner for Session {
+    fn next_node_id(&self) -> NodeId {
+        self.reserve_node_ids(1)
+    }
+
+    fn peek_node_id(&self) -> NodeId {
+        self.next_node_id.get().checked_add(1).unwrap()
+    }
+}
+
 fn split_msg_into_multilines(msg: &str) -> Option<String> {
     // Conditions for enabling multi-line errors:
     if !msg.contains("mismatched types") &&
@@ -299,16 +336,17 @@ fn split_msg_into_multilines(msg: &str) -> Option<String> {
         !msg.contains("if and else have incompatible types") &&
         !msg.contains("if may be missing an else clause") &&
         !msg.contains("match arms have incompatible types") &&
-        !msg.contains("structure constructor specifies a structure of type") {
+        !msg.contains("structure constructor specifies a structure of type") &&
+        !msg.contains("has an incompatible type for trait") {
             return None
     }
     let first = msg.match_indices("expected").filter(|s| {
         s.0 > 0 && (msg.char_at_reverse(s.0) == ' ' ||
                     msg.char_at_reverse(s.0) == '(')
-    }).map(|(a, b)| (a - 1, b));
+    }).map(|(a, b)| (a - 1, a + b.len()));
     let second = msg.match_indices("found").filter(|s| {
         msg.char_at_reverse(s.0) == ' '
-    }).map(|(a, b)| (a - 1, b));
+    }).map(|(a, b)| (a - 1, a + b.len()));
 
     let mut new_msg = String::new();
     let mut head = 0;
@@ -382,8 +420,8 @@ pub fn build_session_(sopts: config::Options,
     let host = match Target::search(config::host_triple()) {
         Ok(t) => t,
         Err(e) => {
-            span_diagnostic.handler()
-                .fatal(&format!("Error loading host specification: {}", e));
+            panic!(span_diagnostic.handler()
+                                  .fatal(&format!("Error loading host specification: {}", e)));
     }
     };
     let target_cfg = config::build_target_config(&sopts, &span_diagnostic);
@@ -425,13 +463,17 @@ pub fn build_session_(sopts: config::Options,
         lint_store: RefCell::new(lint::LintStore::new()),
         lints: RefCell::new(NodeMap()),
         plugin_llvm_passes: RefCell::new(Vec::new()),
+        plugin_attributes: RefCell::new(Vec::new()),
         crate_types: RefCell::new(Vec::new()),
+        dependency_formats: RefCell::new(FnvHashMap()),
         crate_metadata: RefCell::new(Vec::new()),
         delayed_span_bug: RefCell::new(None),
         features: RefCell::new(feature_gate::Features::new()),
         recursion_limit: Cell::new(64),
         can_print_warnings: can_print_warnings,
-        next_node_id: Cell::new(1)
+        next_node_id: Cell::new(1),
+        injected_allocator: Cell::new(None),
+        available_macros: RefCell::new(HashSet::new()),
     };
 
     sess
@@ -444,13 +486,13 @@ pub fn expect<T, M>(sess: &Session, opt: Option<T>, msg: M) -> T where
     diagnostic::expect(sess.diagnostic(), opt, msg)
 }
 
-pub fn early_error(msg: &str) -> ! {
-    let mut emitter = diagnostic::EmitterWriter::stderr(diagnostic::Auto, None);
+pub fn early_error(color: diagnostic::ColorConfig, msg: &str) -> ! {
+    let mut emitter = diagnostic::EmitterWriter::stderr(color, None);
     emitter.emit(None, msg, None, diagnostic::Fatal);
     panic!(diagnostic::FatalError);
 }
 
-pub fn early_warn(msg: &str) {
-    let mut emitter = diagnostic::EmitterWriter::stderr(diagnostic::Auto, None);
+pub fn early_warn(color: diagnostic::ColorConfig, msg: &str) {
+    let mut emitter = diagnostic::EmitterWriter::stderr(color, None);
     emitter.emit(None, msg, None, diagnostic::Warning);
 }

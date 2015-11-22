@@ -8,8 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-
-#![feature(core)]
+#![feature(core_intrinsics)]
 
 struct NT(str);
 struct DST { a: u32, b: str }
@@ -22,10 +21,10 @@ fn main() {
         // str
         std::intrinsics::type_name::<str>(),
         // Trait
-        std::intrinsics::type_name::<Copy>(),
+        std::intrinsics::type_name::<Send>(),
         // Newtype
         std::intrinsics::type_name::<NT>(),
         // DST
         std::intrinsics::type_name::<DST>()
-    )}, ("[u8]", "str", "core::marker::Copy", "NT", "DST"));
+    )}, ("[u8]", "str", "core::marker::Send + 'static", "NT", "DST"));
 }

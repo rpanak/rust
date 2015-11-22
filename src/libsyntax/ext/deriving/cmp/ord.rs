@@ -21,7 +21,7 @@ use ptr::P;
 pub fn expand_deriving_ord(cx: &mut ExtCtxt,
                            span: Span,
                            mitem: &MetaItem,
-                           item: Annotatable,
+                           item: &Annotatable,
                            push: &mut FnMut(Annotatable))
 {
     let inline = cx.meta_word(span, InternedString::new("inline"));
@@ -32,6 +32,7 @@ pub fn expand_deriving_ord(cx: &mut ExtCtxt,
         path: path_std!(cx, core::cmp::Ord),
         additional_bounds: Vec::new(),
         generics: LifetimeBounds::empty(),
+        is_unsafe: false,
         methods: vec!(
             MethodDef {
                 name: "cmp",
@@ -49,7 +50,7 @@ pub fn expand_deriving_ord(cx: &mut ExtCtxt,
         associated_types: Vec::new(),
     };
 
-    trait_def.expand(cx, mitem, &item, push)
+    trait_def.expand(cx, mitem, item, push)
 }
 
 
@@ -65,17 +66,9 @@ pub fn cs_cmp(cx: &mut ExtCtxt, span: Span,
               substr: &Substructure) -> P<Expr> {
     let test_id = cx.ident_of("__test");
     let equals_path = cx.path_global(span,
-                                     vec!(cx.ident_of_std("core"),
-                                          cx.ident_of("cmp"),
-                                          cx.ident_of("Ordering"),
-                                          cx.ident_of("Equal")));
+                                     cx.std_path(&["cmp", "Ordering", "Equal"]));
 
-    let cmp_path = vec![
-        cx.ident_of_std("core"),
-        cx.ident_of("cmp"),
-        cx.ident_of("Ord"),
-        cx.ident_of("cmp"),
-    ];
+    let cmp_path = cx.std_path(&["cmp", "Ord", "cmp"]);
 
     /*
     Builds:

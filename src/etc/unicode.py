@@ -72,8 +72,9 @@ def is_surrogate(n):
 def load_unicode_data(f):
     fetch(f)
     gencats = {}
-    upperlower = {}
-    lowerupper = {}
+    to_lower = {}
+    to_upper = {}
+    to_title = {}
     combines = {}
     canon_decomp = {}
     compat_decomp = {}
@@ -103,12 +104,16 @@ def load_unicode_data(f):
 
         # generate char to char direct common and simple conversions
         # uppercase to lowercase
-        if gencat == "Lu" and lowcase != "" and code_org != lowcase:
-            upperlower[code] = int(lowcase, 16)
+        if lowcase != "" and code_org != lowcase:
+            to_lower[code] = (int(lowcase, 16), 0, 0)
 
         # lowercase to uppercase
-        if gencat == "Ll" and upcase != "" and code_org != upcase:
-            lowerupper[code] = int(upcase, 16)
+        if upcase != "" and code_org != upcase:
+            to_upper[code] = (int(upcase, 16), 0, 0)
+
+        # title case
+        if titlecase.strip() != "" and code_org != titlecase:
+            to_title[code] = (int(titlecase, 16), 0, 0)
 
         # store decomposition, if given
         if decomp != "":
@@ -144,7 +149,32 @@ def load_unicode_data(f):
     gencats = group_cats(gencats)
     combines = to_combines(group_cats(combines))
 
-    return (canon_decomp, compat_decomp, gencats, combines, lowerupper, upperlower)
+    return (canon_decomp, compat_decomp, gencats, combines, to_upper, to_lower, to_title)
+
+def load_special_casing(f, to_upper, to_lower, to_title):
+    fetch(f)
+    for line in fileinput.input(f):
+        data = line.split('#')[0].split(';')
+        if len(data) == 5:
+            code, lower, title, upper, _comment = data
+        elif len(data) == 6:
+            code, lower, title, upper, condition, _comment = data
+            if condition.strip():  # Only keep unconditional mappins
+                continue
+        else:
+            continue
+        code = code.strip()
+        lower = lower.strip()
+        title = title.strip()
+        upper = upper.strip()
+        key = int(code, 16)
+        for (map_, values) in [(to_lower, lower), (to_upper, upper), (to_title, title)]:
+            if values != code:
+                values = [int(i, 16) for i in values.split()]
+                for _ in range(len(values), 3):
+                    values.append(0)
+                assert len(values) == 3
+                map_[key] = values
 
 def group_cats(cats):
     cats_out = {}
@@ -279,18 +309,23 @@ def load_east_asian_width(want_widths, except_cats):
     return widths
 
 def escape_char(c):
-    return "'\\u{%x}'" % c
+    return "'\\u{%x}'" % c if c != 0 else "'\\0'"
 
 def emit_bsearch_range_table(f):
     f.write("""
-fn bsearch_range_table(c: char, r: &'static [(char,char)]) -> bool {
+fn bsearch_range_table(c: char, r: &'static [(char, char)]) -> bool {
     use core::cmp::Ordering::{Equal, Less, Greater};
     use core::slice::SliceExt;
-    r.binary_search_by(|&(lo,hi)| {
-        if lo <= c && c <= hi { Equal }
-        else if hi < c { Less }
-        else { Greater }
-    }).is_ok()
+    r.binary_search_by(|&(lo, hi)| {
+         if lo <= c && c <= hi {
+             Equal
+         } else if hi < c {
+             Less
+         } else {
+             Greater
+         }
+     })
+     .is_ok()
 }\n
 """)
 
@@ -319,7 +354,7 @@ def emit_property_module(f, mod, tbl, emit):
         f.write("    }\n\n")
     f.write("}\n\n")
 
-def emit_conversions_module(f, lowerupper, upperlower):
+def emit_conversions_module(f, to_upper, to_lower, to_title):
     f.write("pub mod conversions {")
     f.write("""
     use core::cmp::Ordering::{Equal, Less, Greater};
@@ -328,21 +363,21 @@ def emit_conversions_module(f, lowerupper, upperlower):
     use core::option::Option::{Some, None};
     use core::result::Result::{Ok, Err};
 
-    pub fn to_lower(c: char) -> char {
-        match bsearch_case_table(c, LuLl_table) {
-          None        => c,
-          Some(index) => LuLl_table[index].1
+    pub fn to_lower(c: char) -> [char; 3] {
+        match bsearch_case_table(c, to_lowercase_table) {
+          None        => [c, '\\0', '\\0'],
+          Some(index) => to_lowercase_table[index].1
         }
     }
 
-    pub fn to_upper(c: char) -> char {
-        match bsearch_case_table(c, LlLu_table) {
-            None        => c,
-            Some(index) => LlLu_table[index].1
+    pub fn to_upper(c: char) -> [char; 3] {
+        match bsearch_case_table(c, to_uppercase_table) {
+            None        => [c, '\\0', '\\0'],
+            Some(index) => to_uppercase_table[index].1
         }
     }
 
-    fn bsearch_case_table(c: char, table: &'static [(char, char)]) -> Option<usize> {
+    fn bsearch_case_table(c: char, table: &'static [(char, [char; 3])]) -> Option<usize> {
         match table.binary_search_by(|&(key, _)| {
             if c == key { Equal }
             else if key < c { Less }
@@ -354,51 +389,16 @@ def emit_conversions_module(f, lowerupper, upperlower):
     }
 
 """)
-    emit_table(f, "LuLl_table",
-        sorted(upperlower.iteritems(), key=operator.itemgetter(0)), is_pub=False)
-    emit_table(f, "LlLu_table",
-        sorted(lowerupper.iteritems(), key=operator.itemgetter(0)), is_pub=False)
+    t_type = "&'static [(char, [char; 3])]"
+    pfun = lambda x: "(%s,[%s,%s,%s])" % (
+        escape_char(x[0]), escape_char(x[1][0]), escape_char(x[1][1]), escape_char(x[1][2]))
+    emit_table(f, "to_lowercase_table",
+        sorted(to_lower.iteritems(), key=operator.itemgetter(0)),
+        is_pub=False, t_type = t_type, pfun=pfun)
+    emit_table(f, "to_uppercase_table",
+        sorted(to_upper.iteritems(), key=operator.itemgetter(0)),
+        is_pub=False, t_type = t_type, pfun=pfun)
     f.write("}\n\n")
-
-def emit_grapheme_module(f, grapheme_table, grapheme_cats):
-    f.write("""pub mod grapheme {
-    use core::slice::SliceExt;
-    pub use self::GraphemeCat::*;
-    use core::result::Result::{Ok, Err};
-
-    #[allow(non_camel_case_types)]
-    #[derive(Clone, Copy)]
-    pub enum GraphemeCat {
-""")
-    for cat in grapheme_cats + ["Any"]:
-        f.write("        GC_" + cat + ",\n")
-    f.write("""    }
-
-    fn bsearch_range_value_table(c: char, r: &'static [(char, char, GraphemeCat)]) -> GraphemeCat {
-        use core::cmp::Ordering::{Equal, Less, Greater};
-        match r.binary_search_by(|&(lo, hi, _)| {
-            if lo <= c && c <= hi { Equal }
-            else if hi < c { Less }
-            else { Greater }
-        }) {
-            Ok(idx) => {
-                let (_, _, cat) = r[idx];
-                cat
-            }
-            Err(_) => GC_Any
-        }
-    }
-
-    pub fn grapheme_category(c: char) -> GraphemeCat {
-        bsearch_range_value_table(c, grapheme_cat_table)
-    }
-
-""")
-
-    emit_table(f, "grapheme_cat_table", grapheme_table, "&'static [(char, char, GraphemeCat)]",
-        pfun=lambda x: "(%s,%s,GC_%s)" % (escape_char(x[0]), escape_char(x[1]), x[2]),
-        is_pub=False)
-    f.write("}\n")
 
 def emit_charwidth_module(f, width_table):
     f.write("pub mod charwidth {\n")
@@ -462,79 +462,6 @@ def emit_norm_module(f, canon, compat, combine, norm_props):
     canon_comp_keys = canon_comp.keys()
     canon_comp_keys.sort()
 
-    f.write("pub mod normalization {\n")
-
-    def mkdata_fun(table):
-        def f(char):
-            data = "(%s,&[" % escape_char(char)
-            first = True
-            for d in table[char]:
-                if not first:
-                    data += ","
-                first = False
-                data += escape_char(d)
-            data += "])"
-            return data
-        return f
-
-    f.write("    // Canonical decompositions\n")
-    emit_table(f, "canonical_table", canon_keys, "&'static [(char, &'static [char])]",
-        pfun=mkdata_fun(canon))
-
-    f.write("    // Compatibility decompositions\n")
-    emit_table(f, "compatibility_table", compat_keys, "&'static [(char, &'static [char])]",
-        pfun=mkdata_fun(compat))
-
-    def comp_pfun(char):
-        data = "(%s,&[" % escape_char(char)
-        canon_comp[char].sort(lambda x, y: x[0] - y[0])
-        first = True
-        for pair in canon_comp[char]:
-            if not first:
-                data += ","
-            first = False
-            data += "(%s,%s)" % (escape_char(pair[0]), escape_char(pair[1]))
-        data += "])"
-        return data
-
-    f.write("    // Canonical compositions\n")
-    emit_table(f, "composition_table", canon_comp_keys,
-        "&'static [(char, &'static [(char, char)])]", pfun=comp_pfun)
-
-    f.write("""
-    fn bsearch_range_value_table(c: char, r: &'static [(char, char, u8)]) -> u8 {
-        use core::cmp::Ordering::{Equal, Less, Greater};
-        use core::slice::SliceExt;
-        use core::result::Result::{Ok, Err};
-        match r.binary_search_by(|&(lo, hi, _)| {
-            if lo <= c && c <= hi { Equal }
-            else if hi < c { Less }
-            else { Greater }
-        }) {
-            Ok(idx) => {
-                let (_, _, result) = r[idx];
-                result
-            }
-            Err(_) => 0
-        }
-    }\n
-""")
-
-    emit_table(f, "combining_class_table", combine, "&'static [(char, char, u8)]", is_pub=False,
-            pfun=lambda x: "(%s,%s,%s)" % (escape_char(x[0]), escape_char(x[1]), x[2]))
-
-    f.write("""    #[deprecated(reason = "use the crates.io `unicode-normalization` lib instead",
-                 since = "1.0.0")]
-    #[unstable(feature = "unicode",
-               reason = "this functionality will be moved to crates.io")]
-    pub fn canonical_combining_class(c: char) -> u8 {
-        bsearch_range_value_table(c, combining_class_table)
-    }
-
-}
-
-""")
-
 def remove_from_wtable(wtable, val):
     wtable_out = []
     while wtable:
@@ -591,8 +518,10 @@ if __name__ == "__main__":
 pub const UNICODE_VERSION: (u64, u64, u64) = (%s, %s, %s);
 """ % unicode_version)
         (canon_decomp, compat_decomp, gencats, combines,
-                lowerupper, upperlower) = load_unicode_data("UnicodeData.txt")
-        want_derived = ["XID_Start", "XID_Continue", "Alphabetic", "Lowercase", "Uppercase"]
+                to_upper, to_lower, to_title) = load_unicode_data("UnicodeData.txt")
+        load_special_casing("SpecialCasing.txt", to_upper, to_lower, to_title)
+        want_derived = ["XID_Start", "XID_Continue", "Alphabetic", "Lowercase", "Uppercase",
+                        "Cased", "Case_Ignorable"]
         derived = load_properties("DerivedCoreProperties.txt", want_derived)
         scripts = load_properties("Scripts.txt", [])
         props = load_properties("PropList.txt",
@@ -611,54 +540,4 @@ pub const UNICODE_VERSION: (u64, u64, u64) = (%s, %s, %s);
 
         # normalizations and conversions module
         emit_norm_module(rf, canon_decomp, compat_decomp, combines, norm_props)
-        emit_conversions_module(rf, lowerupper, upperlower)
-
-        ### character width module
-        width_table = []
-        for zwcat in ["Me", "Mn", "Cf"]:
-            width_table.extend(map(lambda (lo, hi): (lo, hi, 0, 0), gencats[zwcat]))
-        width_table.append((4448, 4607, 0, 0))
-
-        # get widths, except those that are explicitly marked zero-width above
-        ea_widths = load_east_asian_width(["W", "F", "A"], ["Me", "Mn", "Cf"])
-        # these are doublewidth
-        for dwcat in ["W", "F"]:
-            width_table.extend(map(lambda (lo, hi): (lo, hi, 2, 2), ea_widths[dwcat]))
-        width_table.extend(map(lambda (lo, hi): (lo, hi, 1, 2), ea_widths["A"]))
-
-        width_table.sort(key=lambda w: w[0])
-
-        # soft hyphen is not zero width in preformatted text; it's used to indicate
-        # a hyphen inserted to facilitate a linebreak.
-        width_table = remove_from_wtable(width_table, 173)
-
-        # optimize the width table by collapsing adjacent entities when possible
-        width_table = optimize_width_table(width_table)
-        emit_charwidth_module(rf, width_table)
-
-        ### grapheme cluster module
-        # from http://www.unicode.org/reports/tr29/#Grapheme_Cluster_Break_Property_Values
-        grapheme_cats = load_properties("auxiliary/GraphemeBreakProperty.txt", [])
-
-        # Control
-        #  Note 1:
-        # This category also includes Cs (surrogate codepoints), but Rust's `char`s are
-        # Unicode Scalar Values only, and surrogates are thus invalid `char`s.
-        # Thus, we have to remove Cs from the Control category
-        #  Note 2:
-        # 0x0a and 0x0d (CR and LF) are not in the Control category for Graphemes.
-        # However, the Graphemes iterator treats these as a special case, so they
-        # should be included in grapheme_cats["Control"] for our implementation.
-        grapheme_cats["Control"] = group_cat(list(
-            (set(ungroup_cat(grapheme_cats["Control"]))
-             | set(ungroup_cat(grapheme_cats["CR"]))
-             | set(ungroup_cat(grapheme_cats["LF"])))
-            - set(ungroup_cat([surrogate_codepoints]))))
-        del(grapheme_cats["CR"])
-        del(grapheme_cats["LF"])
-
-        grapheme_table = []
-        for cat in grapheme_cats:
-            grapheme_table.extend([(x, y, cat) for (x, y) in grapheme_cats[cat]])
-        grapheme_table.sort(key=lambda w: w[0])
-        emit_grapheme_module(rf, grapheme_table, grapheme_cats.keys())
+        emit_conversions_module(rf, to_upper, to_lower, to_title)

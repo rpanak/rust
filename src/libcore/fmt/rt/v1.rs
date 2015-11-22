@@ -14,8 +14,6 @@
 //! These definitions are similar to their `ct` equivalents, but differ in that
 //! these can be statically allocated and are slightly optimized for the runtime
 
-#![unstable(feature = "core", reason = "internal to format_args!")]
-
 #[derive(Copy, Clone)]
 pub struct Argument {
     pub position: Position,
@@ -55,5 +53,5 @@ pub enum Count {
 #[derive(Copy, Clone)]
 pub enum Position {
     Next,
-    At(usize)
+    At(usize),
 }

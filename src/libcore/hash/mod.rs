@@ -16,8 +16,7 @@
 //! # Examples
 //!
 //! ```rust
-//! # #![feature(hash)]
-//! use std::hash::{hash, Hash, SipHasher};
+//! use std::hash::{Hash, SipHasher, Hasher};
 //!
 //! #[derive(Hash)]
 //! struct Person {
@@ -29,18 +28,24 @@
 //! let person1 = Person { id: 5, name: "Janet".to_string(), phone: 555_666_7777 };
 //! let person2 = Person { id: 5, name: "Bob".to_string(), phone: 555_666_7777 };
 //!
-//! assert!(hash::<_, SipHasher>(&person1) != hash::<_, SipHasher>(&person2));
+//! assert!(hash(&person1) != hash(&person2));
+//!
+//! fn hash<T: Hash>(t: &T) -> u64 {
+//!     let mut s = SipHasher::new();
+//!     t.hash(&mut s);
+//!     s.finish()
+//! }
 //! ```
 //!
 //! If you need more control over how a value is hashed, you need to implement
 //! the trait `Hash`:
 //!
 //! ```rust
-//! # #![feature(hash)]
-//! use std::hash::{hash, Hash, Hasher, SipHasher};
+//! use std::hash::{Hash, Hasher, SipHasher};
 //!
 //! struct Person {
 //!     id: u32,
+//! # #[allow(dead_code)]
 //!     name: String,
 //!     phone: u64,
 //! }
@@ -55,15 +60,22 @@
 //! let person1 = Person { id: 5, name: "Janet".to_string(), phone: 555_666_7777 };
 //! let person2 = Person { id: 5, name: "Bob".to_string(), phone: 555_666_7777 };
 //!
-//! assert_eq!(hash::<_, SipHasher>(&person1), hash::<_, SipHasher>(&person2));
+//! assert_eq!(hash(&person1), hash(&person2));
+//!
+//! fn hash<T: Hash>(t: &T) -> u64 {
+//!     let mut s = SipHasher::new();
+//!     t.hash(&mut s);
+//!     s.finish()
+//! }
 //! ```
 
 #![stable(feature = "rust1", since = "1.0.0")]
 
-use prelude::*;
+use prelude::v1::*;
 
 use mem;
 
+#[stable(feature = "rust1", since = "1.0.0")]
 pub use self::sip::SipHasher;
 
 mod sip;
@@ -82,6 +94,8 @@ mod sip;
 ///
 /// In other words, if two keys are equal, their hashes should also be equal.
 /// `HashMap` and `HashSet` both rely on this behavior.
+///
+/// This trait can be used with `#[derive]`.
 #[stable(feature = "rust1", since = "1.0.0")]
 pub trait Hash {
     /// Feeds this value into the state given, updating the hasher as necessary.
@@ -89,8 +103,10 @@ pub trait Hash {
     fn hash<H: Hasher>(&self, state: &mut H);
 
     /// Feeds a slice of this type into the state provided.
-    #[unstable(feature = "hash", reason = "module was recently redesigned")]
-    fn hash_slice<H: Hasher>(data: &[Self], state: &mut H) where Self: Sized {
+    #[stable(feature = "hash_slice", since = "1.3.0")]
+    fn hash_slice<H: Hasher>(data: &[Self], state: &mut H)
+        where Self: Sized
+    {
         for piece in data {
             piece.hash(state);
         }
@@ -110,74 +126,74 @@ pub trait Hasher {
 
     /// Write a single `u8` into this hasher
     #[inline]
-    #[unstable(feature = "hash", reason = "module was recently redesigned")]
-    fn write_u8(&mut self, i: u8) { self.write(&[i]) }
+    #[stable(feature = "hasher_write", since = "1.3.0")]
+    fn write_u8(&mut self, i: u8) {
+        self.write(&[i])
+    }
     /// Write a single `u16` into this hasher.
     #[inline]
-    #[unstable(feature = "hash", reason = "module was recently redesigned")]
+    #[stable(feature = "hasher_write", since = "1.3.0")]
     fn write_u16(&mut self, i: u16) {
         self.write(&unsafe { mem::transmute::<_, [u8; 2]>(i) })
     }
     /// Write a single `u32` into this hasher.
     #[inline]
-    #[unstable(feature = "hash", reason = "module was recently redesigned")]
+    #[stable(feature = "hasher_write", since = "1.3.0")]
     fn write_u32(&mut self, i: u32) {
         self.write(&unsafe { mem::transmute::<_, [u8; 4]>(i) })
     }
     /// Write a single `u64` into this hasher.
     #[inline]
-    #[unstable(feature = "hash", reason = "module was recently redesigned")]
+    #[stable(feature = "hasher_write", since = "1.3.0")]
     fn write_u64(&mut self, i: u64) {
         self.write(&unsafe { mem::transmute::<_, [u8; 8]>(i) })
     }
     /// Write a single `usize` into this hasher.
     #[inline]
-    #[unstable(feature = "hash", reason = "module was recently redesigned")]
+    #[stable(feature = "hasher_write", since = "1.3.0")]
     fn write_usize(&mut self, i: usize) {
-        if cfg!(target_pointer_width = "32") {
-            self.write_u32(i as u32)
-        } else {
-            self.write_u64(i as u64)
-        }
+        let bytes = unsafe {
+            ::slice::from_raw_parts(&i as *const usize as *const u8, mem::size_of::<usize>())
+        };
+        self.write(bytes);
     }
 
     /// Write a single `i8` into this hasher.
     #[inline]
-    #[unstable(feature = "hash", reason = "module was recently redesigned")]
-    fn write_i8(&mut self, i: i8) { self.write_u8(i as u8) }
+    #[stable(feature = "hasher_write", since = "1.3.0")]
+    fn write_i8(&mut self, i: i8) {
+        self.write_u8(i as u8)
+    }
     /// Write a single `i16` into this hasher.
     #[inline]
-    #[unstable(feature = "hash", reason = "module was recently redesigned")]
-    fn write_i16(&mut self, i: i16) { self.write_u16(i as u16) }
+    #[stable(feature = "hasher_write", since = "1.3.0")]
+    fn write_i16(&mut self, i: i16) {
+        self.write_u16(i as u16)
+    }
     /// Write a single `i32` into this hasher.
     #[inline]
-    #[unstable(feature = "hash", reason = "module was recently redesigned")]
-    fn write_i32(&mut self, i: i32) { self.write_u32(i as u32) }
+    #[stable(feature = "hasher_write", since = "1.3.0")]
+    fn write_i32(&mut self, i: i32) {
+        self.write_u32(i as u32)
+    }
     /// Write a single `i64` into this hasher.
     #[inline]
-    #[unstable(feature = "hash", reason = "module was recently redesigned")]
-    fn write_i64(&mut self, i: i64) { self.write_u64(i as u64) }
+    #[stable(feature = "hasher_write", since = "1.3.0")]
+    fn write_i64(&mut self, i: i64) {
+        self.write_u64(i as u64)
+    }
     /// Write a single `isize` into this hasher.
     #[inline]
-    #[unstable(feature = "hash", reason = "module was recently redesigned")]
-    fn write_isize(&mut self, i: isize) { self.write_usize(i as usize) }
-}
-
-/// Hash a value with the default SipHasher algorithm (two initial keys of 0).
-///
-/// The specified value will be hashed with this hasher and then the resulting
-/// hash will be returned.
-#[unstable(feature = "hash", reason = "module was recently redesigned")]
-pub fn hash<T: Hash, H: Hasher + Default>(value: &T) -> u64 {
-    let mut h: H = Default::default();
-    value.hash(&mut h);
-    h.finish()
+    #[stable(feature = "hasher_write", since = "1.3.0")]
+    fn write_isize(&mut self, i: isize) {
+        self.write_usize(i as usize)
+    }
 }
 
 //////////////////////////////////////////////////////////////////////////////
 
 mod impls {
-    use prelude::*;
+    use prelude::v1::*;
 
     use slice;
     use super::*;

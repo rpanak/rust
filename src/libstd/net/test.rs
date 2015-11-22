@@ -12,9 +12,9 @@ use prelude::v1::*;
 
 use env;
 use net::{SocketAddr, SocketAddrV4, SocketAddrV6, Ipv4Addr, Ipv6Addr, ToSocketAddrs};
-use sync::atomic::{AtomicUsize, ATOMIC_USIZE_INIT, Ordering};
+use sync::atomic::{AtomicUsize, Ordering};
 
-static PORT: AtomicUsize = ATOMIC_USIZE_INIT;
+static PORT: AtomicUsize = AtomicUsize::new(0);
 
 pub fn next_test_ip4() -> SocketAddr {
     let port = PORT.fetch_add(1, Ordering::SeqCst) as u16 + base_port();
@@ -47,7 +47,9 @@ pub fn tsa<A: ToSocketAddrs>(a: A) -> Result<Vec<SocketAddr>, String> {
 // it is running in and assigns a port range based on it.
 fn base_port() -> u16 {
     let cwd = env::current_dir().unwrap();
-    let dirs = ["32-opt", "32-nopt", "64-opt", "64-nopt", "64-opt-vg",
+    let dirs = ["32-opt", "32-nopt",
+                "musl-64-opt", "cross-opt",
+                "64-opt", "64-nopt", "64-opt-vg", "64-debug-opt",
                 "all-opt", "snap3", "dist"];
     dirs.iter().enumerate().find(|&(_, dir)| {
         cwd.to_str().unwrap().contains(dir)

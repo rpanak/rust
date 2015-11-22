@@ -10,9 +10,9 @@
 
 //! An implementation of SipHash 2-4.
 
-#![allow(deprecated)] // until the next snapshot for inherent wrapping ops
+use prelude::v1::*;
 
-use prelude::*;
+use ptr;
 use super::Hasher;
 
 /// An implementation of SipHash 2-4.
@@ -33,12 +33,16 @@ pub struct SipHasher {
     k0: u64,
     k1: u64,
     length: usize, // how many bytes we've processed
-    v0: u64,      // hash state
-    v1: u64,
+    // v0, v2 and v1, v3 show up in pairs in the algorithm,
+    // and simd implementations of SipHash will use vectors
+    // of v02 and v13. By placing them in this order in the struct,
+    // the compiler can pick up on just a few simd optimizations by itself.
+    v0: u64, // hash state
     v2: u64,
+    v1: u64,
     v3: u64,
     tail: u64, // unprocessed bytes le
-    ntail: usize,  // how many bytes in tail are valid
+    ntail: usize, // how many bytes in tail are valid
 }
 
 // sadly, these macro definitions can't appear later,
@@ -65,6 +69,19 @@ macro_rules! u8to64_le {
         }
         out
     });
+}
+
+/// Load a full u64 word from a byte stream, in LE order. Use
+/// `copy_nonoverlapping` to let the compiler generate the most efficient way
+/// to load u64 from a possibly unaligned address.
+///
+/// Unsafe because: unchecked indexing at i..i+8
+#[inline]
+unsafe fn load_u64_le(buf: &[u8], i: usize) -> u64 {
+    debug_assert!(i + 8 <= buf.len());
+    let mut data = 0u64;
+    ptr::copy_nonoverlapping(buf.get_unchecked(i), &mut data as *mut _ as *mut u8, 8);
+    data.to_le()
 }
 
 macro_rules! rotl {
@@ -120,7 +137,10 @@ impl SipHasher {
         self.v3 = self.k1 ^ 0x7465646279746573;
         self.ntail = 0;
     }
+}
 
+#[stable(feature = "rust1", since = "1.0.0")]
+impl Hasher for SipHasher {
     #[inline]
     fn write(&mut self, msg: &[u8]) {
         let length = msg.len();
@@ -131,12 +151,12 @@ impl SipHasher {
         if self.ntail != 0 {
             needed = 8 - self.ntail;
             if length < needed {
-                self.tail |= u8to64_le!(msg, 0, length) << 8*self.ntail;
+                self.tail |= u8to64_le!(msg, 0, length) << 8 * self.ntail;
                 self.ntail += length;
                 return
             }
 
-            let m = self.tail | u8to64_le!(msg, 0, needed) << 8*self.ntail;
+            let m = self.tail | u8to64_le!(msg, 0, needed) << 8 * self.ntail;
 
             self.v3 ^= m;
             compress!(self.v0, self.v1, self.v2, self.v3);
@@ -148,12 +168,11 @@ impl SipHasher {
 
         // Buffered tail is now flushed, process new input.
         let len = length - needed;
-        let end = len & (!0x7);
         let left = len & 0x7;
 
         let mut i = needed;
-        while i < end {
-            let mi = u8to64_le!(msg, i);
+        while i < len - left {
+            let mi = unsafe { load_u64_le(msg, i) };
 
             self.v3 ^= mi;
             compress!(self.v0, self.v1, self.v2, self.v3);
@@ -165,14 +184,6 @@ impl SipHasher {
 
         self.tail = u8to64_le!(msg, i, left);
         self.ntail = left;
-    }
-}
-
-#[stable(feature = "rust1", since = "1.0.0")]
-impl Hasher for SipHasher {
-    #[inline]
-    fn write(&mut self, msg: &[u8]) {
-        self.write(msg)
     }
 
     #[inline]

@@ -14,6 +14,8 @@
 #![feature(staged_api)]
 #![staged_api]
 
+#![stable(feature = "rust1", since = "1.0.0")]
+
 mod cross_crate {
     extern crate lint_stability_fields;
 
@@ -116,14 +118,20 @@ mod cross_crate {
             //~^ ERROR use of deprecated item
             //~^^ ERROR use of unstable
             override1: 2,
-            override2: 3, //~ ERROR use of unstable
+            //~^ ERROR use of deprecated item
+            override2: 3,
+            //~^ ERROR use of deprecated item
+            //~^^ ERROR use of unstable
         };
 
         let _ = x.inherit;
         //~^ ERROR use of deprecated item
         //~^^ ERROR use of unstable
         let _ = x.override1;
-        let _ = x.override2; //~ ERROR use of unstable
+        //~^ ERROR use of deprecated item
+        let _ = x.override2;
+        //~^ ERROR use of deprecated item
+        //~^^ ERROR use of unstable
 
         let Deprecated {
             //~^ ERROR use of deprecated item
@@ -132,7 +140,10 @@ mod cross_crate {
             //~^ ERROR use of deprecated item
             //~^^ ERROR use of unstable
             override1: _,
-            override2: _ //~ ERROR use of unstable
+            //~^ ERROR use of deprecated item
+            override2: _
+            //~^ ERROR use of unstable
+            //~^^ ERROR use of deprecated item
         } = x;
 
         let Deprecated
@@ -149,7 +160,10 @@ mod cross_crate {
         //~^ ERROR use of deprecated item
         //~^^ ERROR use of unstable
         let _ = x.1;
-        let _ = x.2; //~ ERROR use of unstable
+        //~^ ERROR use of deprecated item
+        let _ = x.2;
+        //~^ ERROR use of deprecated item
+        //~^^ ERROR use of unstable
 
         let Deprecated2
         //~^ ERROR use of deprecated item
@@ -158,7 +172,10 @@ mod cross_crate {
              //~^ ERROR use of deprecated item
              //~^^ ERROR use of unstable
              _,
-             _) //~ ERROR use of unstable
+             //~^ ERROR use of deprecated item
+             _)
+             //~^ ERROR use of deprecated item
+             //~^^ ERROR use of unstable
             = x;
         let Deprecated2
         //~^ ERROR use of deprecated item
@@ -172,48 +189,50 @@ mod this_crate {
     #[stable(feature = "rust1", since = "1.0.0")]
     struct Stable {
         inherit: u8,
-        #[unstable(feature = "test_feature")]
+        #[unstable(feature = "test_feature", issue = "0")]
         override1: u8,
-        #[deprecated(since = "1.0.0")]
-        #[unstable(feature = "test_feature")]
+        #[deprecated(since = "1.0.0", reason = "text")]
+        #[unstable(feature = "test_feature", issue = "0")]
         override2: u8,
     }
 
     #[stable(feature = "rust1", since = "1.0.0")]
     struct Stable2(u8,
                    #[stable(feature = "rust1", since = "1.0.0")] u8,
-                   #[unstable(feature = "test_feature")] #[deprecated(since = "1.0.0")] u8);
+                   #[unstable(feature = "test_feature", issue = "0")]
+                   #[deprecated(since = "1.0.0", reason = "text")] u8);
 
-    #[unstable(feature = "test_feature")]
+    #[unstable(feature = "test_feature", issue = "0")]
     struct Unstable {
         inherit: u8,
         #[stable(feature = "rust1", since = "1.0.0")]
         override1: u8,
-        #[deprecated(since = "1.0.0")]
-        #[unstable(feature = "test_feature")]
+        #[deprecated(since = "1.0.0", reason = "text")]
+        #[unstable(feature = "test_feature", issue = "0")]
         override2: u8,
     }
 
-    #[unstable(feature = "test_feature")]
+    #[unstable(feature = "test_feature", issue = "0")]
     struct Unstable2(u8,
                      #[stable(feature = "rust1", since = "1.0.0")] u8,
-                     #[unstable(feature = "test_feature")] #[deprecated(since = "1.0.0")] u8);
+                     #[unstable(feature = "test_feature", issue = "0")]
+                     #[deprecated(since = "1.0.0", reason = "text")] u8);
 
-    #[unstable(feature = "test_feature")]
-    #[deprecated(feature = "rust1", since = "1.0.0")]
+    #[unstable(feature = "test_feature", issue = "0")]
+    #[deprecated(since = "1.0.0", reason = "text")]
     struct Deprecated {
         inherit: u8,
         #[stable(feature = "rust1", since = "1.0.0")]
         override1: u8,
-        #[unstable(feature = "test_feature")]
+        #[unstable(feature = "test_feature", issue = "0")]
         override2: u8,
     }
 
-    #[unstable(feature = "test_feature")]
-    #[deprecated(feature = "rust1", since = "1.0.0")]
+    #[unstable(feature = "test_feature", issue = "0")]
+    #[deprecated(since = "1.0.0", reason = "text")]
     struct Deprecated2(u8,
                        #[stable(feature = "rust1", since = "1.0.0")] u8,
-                       #[unstable(feature = "test_feature")] u8);
+                       #[unstable(feature = "test_feature", issue = "0")] u8);
 
     pub fn foo() {
         let x = Stable {
@@ -300,20 +319,26 @@ mod this_crate {
             inherit: 1,
             //~^ ERROR use of deprecated item
             override1: 2,
+            //~^ ERROR use of deprecated item
             override2: 3,
+            //~^ ERROR use of deprecated item
         };
 
         let _ = x.inherit;
         //~^ ERROR use of deprecated item
         let _ = x.override1;
+        //~^ ERROR use of deprecated item
         let _ = x.override2;
+        //~^ ERROR use of deprecated item
 
         let Deprecated {
             //~^ ERROR use of deprecated item
             inherit: _,
             //~^ ERROR use of deprecated item
             override1: _,
+            //~^ ERROR use of deprecated item
             override2: _
+            //~^ ERROR use of deprecated item
         } = x;
 
         let Deprecated
@@ -327,14 +352,18 @@ mod this_crate {
         let _ = x.0;
         //~^ ERROR use of deprecated item
         let _ = x.1;
+        //~^ ERROR use of deprecated item
         let _ = x.2;
+        //~^ ERROR use of deprecated item
 
         let Deprecated2
         //~^ ERROR use of deprecated item
             (_,
              //~^ ERROR use of deprecated item
              _,
+             //~^ ERROR use of deprecated item
              _)
+            //~^ ERROR use of deprecated item
             = x;
         let Deprecated2
         //~^ ERROR use of deprecated item

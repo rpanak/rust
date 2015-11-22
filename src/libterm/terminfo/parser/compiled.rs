@@ -19,6 +19,7 @@ use super::super::TermInfo;
 
 // These are the orders ncurses uses in its compiled format (as of 5.9). Not sure if portable.
 
+#[allow(missing_docs)]
 pub static boolfnames: &'static[&'static str] = &["auto_left_margin", "auto_right_margin",
     "no_esc_ctlc", "ceol_standout_glitch", "eat_newline_glitch", "erase_overstrike", "generic_type",
     "hard_copy", "has_meta_key", "has_status_line", "insert_null_glitch", "memory_above",
@@ -31,11 +32,13 @@ pub static boolfnames: &'static[&'static str] = &["auto_left_margin", "auto_righ
     "no_correctly_working_cr", "gnu_has_meta_key", "linefeed_is_newline", "has_hardware_tabs",
     "return_does_clr_eol"];
 
+#[allow(missing_docs)]
 pub static boolnames: &'static[&'static str] = &["bw", "am", "xsb", "xhp", "xenl", "eo",
     "gn", "hc", "km", "hs", "in", "db", "da", "mir", "msgr", "os", "eslok", "xt", "hz", "ul", "xon",
     "nxon", "mc5i", "chts", "nrrmc", "npc", "ndscr", "ccc", "bce", "hls", "xhpa", "crxm", "daisy",
     "xvpa", "sam", "cpix", "lpix", "OTbs", "OTns", "OTnc", "OTMT", "OTNL", "OTpt", "OTxr"];
 
+#[allow(missing_docs)]
 pub static numfnames: &'static[&'static str] = &[ "columns", "init_tabs", "lines",
     "lines_of_memory", "magic_cookie_glitch", "padding_baud_rate", "virtual_terminal",
     "width_status_line", "num_labels", "label_height", "label_width", "max_attributes",
@@ -46,11 +49,13 @@ pub static numfnames: &'static[&'static str] = &[ "columns", "init_tabs", "lines
     "bit_image_entwining", "bit_image_type", "magic_cookie_glitch_ul", "carriage_return_delay",
     "new_line_delay", "backspace_delay", "horizontal_tab_delay", "number_of_function_keys"];
 
+#[allow(missing_docs)]
 pub static numnames: &'static[&'static str] = &[ "cols", "it", "lines", "lm", "xmc", "pb",
     "vt", "wsl", "nlab", "lh", "lw", "ma", "wnum", "colors", "pairs", "ncv", "bufsz", "spinv",
     "spinh", "maddr", "mjump", "mcs", "mls", "npins", "orc", "orl", "orhi", "orvi", "cps", "widcs",
     "btns", "bitwin", "bitype", "UTug", "OTdC", "OTdN", "OTdB", "OTdT", "OTkn"];
 
+#[allow(missing_docs)]
 pub static stringfnames: &'static[&'static str] = &[ "back_tab", "bell", "carriage_return",
     "change_scroll_region", "clear_all_tabs", "clear_screen", "clr_eol", "clr_eos",
     "column_address", "command_character", "cursor_address", "cursor_down", "cursor_home",
@@ -124,6 +129,7 @@ pub static stringfnames: &'static[&'static str] = &[ "back_tab", "bell", "carria
     "acs_lrcorner", "acs_ltee", "acs_rtee", "acs_btee", "acs_ttee", "acs_hline", "acs_vline",
     "acs_plus", "memory_lock", "memory_unlock", "box_chars_1"];
 
+#[allow(missing_docs)]
 pub static stringnames: &'static[&'static str] = &[ "cbt", "_", "cr", "csr", "tbc", "clear",
     "_", "_", "hpa", "cmdch", "cup", "cud1", "home", "civis", "cub1", "mrcup", "cnorm", "cuf1",
     "ll", "cuu1", "cvvis", "dch1", "dl1", "dsl", "hd", "smacs", "blink", "bold", "smcup", "smdc",
@@ -199,28 +205,28 @@ pub fn parse(file: &mut Read, longnames: bool)
 
     if (bools_bytes as usize) > boolnames.len() {
         return Err("incompatible file: more booleans than \
-                    expected".to_string());
+                    expected".to_owned());
     }
 
     if (numbers_count as usize) > numnames.len() {
         return Err("incompatible file: more numbers than \
-                    expected".to_string());
+                    expected".to_owned());
     }
 
     if (string_offsets_count as usize) > stringnames.len() {
         return Err("incompatible file: more string offsets than \
-                    expected".to_string());
+                    expected".to_owned());
     }
 
     // don't read NUL
     let bytes = try!(read_exact(file, names_bytes as usize - 1));
     let names_str = match String::from_utf8(bytes) {
         Ok(s)  => s,
-        Err(_) => return Err("input not utf-8".to_string()),
+        Err(_) => return Err("input not utf-8".to_owned()),
     };
 
     let term_names: Vec<String> = names_str.split('|')
-                                           .map(|s| s.to_string())
+                                           .map(str::to_owned)
                                            .collect();
 
     try!(read_byte(file)); // consume NUL
@@ -230,7 +236,7 @@ pub fn parse(file: &mut Read, longnames: bool)
         for i in 0..bools_bytes {
             let b = try!(read_byte(file));
             if b == 1 {
-                bools_map.insert(bnames[i as usize].to_string(), true);
+                bools_map.insert(bnames[i as usize].to_owned(), true);
             }
         }
     }
@@ -244,7 +250,7 @@ pub fn parse(file: &mut Read, longnames: bool)
         for i in 0..numbers_count {
             let n = try!(read_le_u16(file));
             if n != 0xFFFF {
-                numbers_map.insert(nnames[i as usize].to_string(), n);
+                numbers_map.insert(nnames[i as usize].to_owned(), n);
             }
         }
     }
@@ -261,7 +267,7 @@ pub fn parse(file: &mut Read, longnames: bool)
 
         if string_table.len() != string_table_bytes as usize {
             return Err("error: hit EOF before end of string \
-                        table".to_string());
+                        table".to_owned());
         }
 
         for (i, v) in string_offsets.iter().enumerate() {
@@ -279,7 +285,7 @@ pub fn parse(file: &mut Read, longnames: bool)
             if offset == 0xFFFE {
                 // undocumented: FFFE indicates cap@, which means the capability is not present
                 // unsure if the handling for this is correct
-                string_map.insert(name.to_string(), Vec::new());
+                string_map.insert(name.to_owned(), Vec::new());
                 continue;
             }
 
@@ -295,7 +301,7 @@ pub fn parse(file: &mut Read, longnames: bool)
                 },
                 None => {
                     return Err("invalid file: missing NUL in \
-                                string_table".to_string());
+                                string_table".to_owned());
                 }
             };
         }
@@ -332,12 +338,12 @@ fn read_exact<R: Read + ?Sized>(r: &mut R, sz: usize) -> io::Result<Vec<u8>> {
 /// Create a dummy TermInfo struct for msys terminals
 pub fn msys_terminfo() -> Box<TermInfo> {
     let mut strings = HashMap::new();
-    strings.insert("sgr0".to_string(), b"\x1B[0m".to_vec());
-    strings.insert("bold".to_string(), b"\x1B[1m".to_vec());
-    strings.insert("setaf".to_string(), b"\x1B[3%p1%dm".to_vec());
-    strings.insert("setab".to_string(), b"\x1B[4%p1%dm".to_vec());
+    strings.insert("sgr0".to_owned(), b"\x1B[0m".to_vec());
+    strings.insert("bold".to_owned(), b"\x1B[1m".to_vec());
+    strings.insert("setaf".to_owned(), b"\x1B[3%p1%dm".to_vec());
+    strings.insert("setab".to_owned(), b"\x1B[4%p1%dm".to_vec());
     box TermInfo {
-        names: vec!("cygwin".to_string()), // msys is a fork of an older cygwin version
+        names: vec!("cygwin".to_owned()), // msys is a fork of an older cygwin version
         bools: HashMap::new(),
         numbers: HashMap::new(),
         strings: strings

@@ -14,30 +14,6 @@
 //! library. Each macro is available for use when linking against the standard
 //! library.
 
-#![unstable(feature = "std_misc")]
-
-/// The entry point for panic of Rust threads.
-///
-/// This macro is used to inject panic into a Rust thread, causing the thread to
-/// unwind and panic entirely. Each thread's panic can be reaped as the
-/// `Box<Any>` type, and the single-argument form of the `panic!` macro will be
-/// the value which is transmitted.
-///
-/// The multi-argument form of this macro panics with a string and has the
-/// `format!` syntax for building a string.
-///
-/// # Examples
-///
-/// ```should_panic
-/// # #![allow(unreachable_code)]
-/// panic!();
-/// panic!("this is a terrible mistake!");
-/// panic!(4); // panic with the value of 4 to be collected elsewhere
-/// panic!("this is a {} {message}", "fancy", message = "message");
-/// ```
-#[macro_export]
-#[stable(feature = "rust1", since = "1.0.0")]
-#[allow_internal_unstable]
 /// The entry point for panic of Rust threads.
 ///
 /// This macro is used to inject panic into a Rust thread, causing the thread to
@@ -91,6 +67,30 @@ macro_rules! panic {
 /// Note that stdout is frequently line-buffered by default so it may be
 /// necessary to use `io::stdout().flush()` to ensure the output is emitted
 /// immediately.
+///
+/// # Panics
+///
+/// Panics if writing to `io::stdout()` fails.
+///
+/// # Examples
+///
+/// ```
+/// use std::io::{self, Write};
+///
+/// print!("this ");
+/// print!("will ");
+/// print!("be ");
+/// print!("on ");
+/// print!("the ");
+/// print!("same ");
+/// print!("line ");
+///
+/// io::stdout().flush().unwrap();
+///
+/// print!("this string has a newline, why not choose println! instead?\n");
+///
+/// io::stdout().flush().unwrap();
+/// ```
 #[macro_export]
 #[stable(feature = "rust1", since = "1.0.0")]
 #[allow_internal_unstable]
@@ -98,10 +98,14 @@ macro_rules! print {
     ($($arg:tt)*) => ($crate::io::_print(format_args!($($arg)*)));
 }
 
-/// Macro for printing to the standard output.
+/// Macro for printing to the standard output, with a newline.
 ///
 /// Use the `format!` syntax to write data to the standard output.
 /// See `std::fmt` for more information.
+///
+/// # Panics
+///
+/// Panics if writing to `io::stdout()` fails.
 ///
 /// # Examples
 ///
@@ -117,7 +121,34 @@ macro_rules! println {
 }
 
 /// Helper macro for unwrapping `Result` values while returning early with an
-/// error if the value of the expression is `Err`.
+/// error if the value of the expression is `Err`. Can only be used in
+/// functions that return `Result` because of the early return of `Err` that
+/// it provides.
+///
+/// # Examples
+///
+/// ```
+/// use std::io;
+/// use std::fs::File;
+/// use std::io::prelude::*;
+///
+/// fn write_to_file_using_try() -> Result<(), io::Error> {
+///     let mut file = try!(File::create("my_best_friends.txt"));
+///     try!(file.write_all(b"This is a list of my best friends."));
+///     println!("I wrote to the file");
+///     Ok(())
+/// }
+/// // This is equivalent to:
+/// fn write_to_file_using_match() -> Result<(), io::Error> {
+///     let mut file = try!(File::create("my_best_friends.txt"));
+///     match file.write_all(b"This is a list of my best friends.") {
+///         Ok(_) => (),
+///         Err(e) => return Err(e),
+///     }
+///     println!("I wrote to the file");
+///     Ok(())
+/// }
+/// ```
 #[macro_export]
 #[stable(feature = "rust1", since = "1.0.0")]
 macro_rules! try {
@@ -138,7 +169,8 @@ macro_rules! try {
 /// # Examples
 ///
 /// ```
-/// # #![feature(std_misc)]
+/// #![feature(mpsc_select)]
+///
 /// use std::thread;
 /// use std::sync::mpsc;
 ///
@@ -164,7 +196,7 @@ macro_rules! try {
 ///
 /// For more information about select, see the `std::sync::mpsc::Select` structure.
 #[macro_export]
-#[unstable(feature = "std_misc")]
+#[unstable(feature = "mpsc_select", issue = "27800")]
 macro_rules! select {
     (
         $($name:pat = $rx:ident.$meth:ident() => $code:expr),+
@@ -193,6 +225,15 @@ macro_rules! log {
     )
 }
 
+#[cfg(test)]
+macro_rules! assert_approx_eq {
+    ($a:expr, $b:expr) => ({
+        let (a, b) = (&$a, &$b);
+        assert!((*a - *b).abs() < 1.0e-6,
+                "{} is not approximately equal to {}", *a, *b);
+    })
+}
+
 /// Built-in macros to the compiler itself.
 ///
 /// These macros do not have any corresponding definition with a `macro_rules!`
@@ -218,6 +259,7 @@ pub mod builtin {
     /// assert_eq!(s, format!("hello {}", "world"));
     ///
     /// ```
+    #[stable(feature = "rust1", since = "1.0.0")]
     #[macro_export]
     macro_rules! format_args { ($fmt:expr, $($args:tt)*) => ({
         /* compiler built-in */
@@ -238,6 +280,7 @@ pub mod builtin {
     /// let path: &'static str = env!("PATH");
     /// println!("the $PATH variable at the time of compiling was: {}", path);
     /// ```
+    #[stable(feature = "rust1", since = "1.0.0")]
     #[macro_export]
     macro_rules! env { ($name:expr) => ({ /* compiler built-in */ }) }
 
@@ -257,6 +300,7 @@ pub mod builtin {
     /// let key: Option<&'static str> = option_env!("SECRET_KEY");
     /// println!("the secret key might be: {:?}", key);
     /// ```
+    #[stable(feature = "rust1", since = "1.0.0")]
     #[macro_export]
     macro_rules! option_env { ($name:expr) => ({ /* compiler built-in */ }) }
 
@@ -281,6 +325,7 @@ pub mod builtin {
     /// println!("{}", f());
     /// # }
     /// ```
+    #[stable(feature = "rust1", since = "1.0.0")]
     #[macro_export]
     macro_rules! concat_idents {
         ($($e:ident),*) => ({ /* compiler built-in */ })
@@ -301,12 +346,13 @@ pub mod builtin {
     /// let s = concat!("test", 10, 'b', true);
     /// assert_eq!(s, "test10btrue");
     /// ```
+    #[stable(feature = "rust1", since = "1.0.0")]
     #[macro_export]
     macro_rules! concat { ($($e:expr),*) => ({ /* compiler built-in */ }) }
 
     /// A macro which expands to the line number on which it was invoked.
     ///
-    /// The expanded expression has type `usize`, and the returned line is not
+    /// The expanded expression has type `u32`, and the returned line is not
     /// the invocation of the `line!()` macro itself, but rather the first macro
     /// invocation leading up to the invocation of the `line!()` macro.
     ///
@@ -316,12 +362,13 @@ pub mod builtin {
     /// let current_line = line!();
     /// println!("defined on line: {}", current_line);
     /// ```
+    #[stable(feature = "rust1", since = "1.0.0")]
     #[macro_export]
     macro_rules! line { () => ({ /* compiler built-in */ }) }
 
     /// A macro which expands to the column number on which it was invoked.
     ///
-    /// The expanded expression has type `usize`, and the returned column is not
+    /// The expanded expression has type `u32`, and the returned column is not
     /// the invocation of the `column!()` macro itself, but rather the first macro
     /// invocation leading up to the invocation of the `column!()` macro.
     ///
@@ -331,6 +378,7 @@ pub mod builtin {
     /// let current_col = column!();
     /// println!("defined on column: {}", current_col);
     /// ```
+    #[stable(feature = "rust1", since = "1.0.0")]
     #[macro_export]
     macro_rules! column { () => ({ /* compiler built-in */ }) }
 
@@ -347,6 +395,7 @@ pub mod builtin {
     /// let this_file = file!();
     /// println!("defined in file: {}", this_file);
     /// ```
+    #[stable(feature = "rust1", since = "1.0.0")]
     #[macro_export]
     macro_rules! file { () => ({ /* compiler built-in */ }) }
 
@@ -362,6 +411,7 @@ pub mod builtin {
     /// let one_plus_one = stringify!(1 + 1);
     /// assert_eq!(one_plus_one, "1 + 1");
     /// ```
+    #[stable(feature = "rust1", since = "1.0.0")]
     #[macro_export]
     macro_rules! stringify { ($t:tt) => ({ /* compiler built-in */ }) }
 
@@ -376,12 +426,13 @@ pub mod builtin {
     /// ```rust,ignore
     /// let secret_key = include_str!("secret-key.ascii");
     /// ```
+    #[stable(feature = "rust1", since = "1.0.0")]
     #[macro_export]
     macro_rules! include_str { ($file:expr) => ({ /* compiler built-in */ }) }
 
-    /// Includes a file as a byte slice.
+    /// Includes a file as a reference to a byte array.
     ///
-    /// This macro will yield an expression of type `&'static [u8]` which is
+    /// This macro will yield an expression of type `&'static [u8; N]` which is
     /// the contents of the filename specified. The file is located relative to
     /// the current file (similarly to how modules are found),
     ///
@@ -390,6 +441,7 @@ pub mod builtin {
     /// ```rust,ignore
     /// let secret_key = include_bytes!("secret-key.bin");
     /// ```
+    #[stable(feature = "rust1", since = "1.0.0")]
     #[macro_export]
     macro_rules! include_bytes { ($file:expr) => ({ /* compiler built-in */ }) }
 
@@ -410,6 +462,7 @@ pub mod builtin {
     ///
     /// test::foo();
     /// ```
+    #[stable(feature = "rust1", since = "1.0.0")]
     #[macro_export]
     macro_rules! module_path { () => ({ /* compiler built-in */ }) }
 
@@ -431,6 +484,7 @@ pub mod builtin {
     ///     "unix-directory"
     /// };
     /// ```
+    #[stable(feature = "rust1", since = "1.0.0")]
     #[macro_export]
     macro_rules! cfg { ($cfg:tt) => ({ /* compiler built-in */ }) }
 
@@ -445,6 +499,7 @@ pub mod builtin {
     ///     include!("/path/to/a/file")
     /// }
     /// ```
+    #[stable(feature = "rust1", since = "1.0.0")]
     #[macro_export]
     macro_rules! include { ($cfg:tt) => ({ /* compiler built-in */ }) }
 }

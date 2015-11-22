@@ -23,7 +23,7 @@ extern crate syntax;
 use rustc::session::Session;
 use rustc::session::config::{self, Input};
 use rustc_driver::{driver, CompilerCalls, Compilation};
-use syntax::diagnostics;
+use syntax::{diagnostics, diagnostic};
 
 use std::path::PathBuf;
 
@@ -34,7 +34,8 @@ struct TestCalls {
 impl<'a> CompilerCalls<'a> for TestCalls {
     fn early_callback(&mut self,
                       _: &getopts::Matches,
-                      _: &diagnostics::registry::Registry)
+                      _: &diagnostics::registry::Registry,
+                      _: diagnostic::ColorConfig)
                       -> Compilation {
         self.count *= 2;
         Compilation::Continue
@@ -78,5 +79,5 @@ fn main() {
     // we should never get use this filename, but lets make sure they are valid args.
     let args = vec!["compiler-calls".to_string(), "foo.rs".to_string()];
     rustc_driver::run_compiler(&args, &mut tc);
-    assert!(tc.count == 30);
+    assert_eq!(tc.count, 30);
 }

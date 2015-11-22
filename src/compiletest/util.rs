@@ -21,6 +21,7 @@ const OS_TABLE: &'static [(&'static str, &'static str)] = &[
     ("ios", "ios"),
     ("linux", "linux"),
     ("mingw32", "windows"),
+    ("netbsd", "netbsd"),
     ("openbsd", "openbsd"),
     ("win32", "windows"),
     ("windows", "windows"),
@@ -72,7 +73,7 @@ pub fn make_new_path(path: &str) -> String {
         Ok(curr) => {
             format!("{}{}{}", path, path_div(), curr)
         }
-        Err(..) => path.to_string()
+        Err(..) => path.to_owned()
     }
 }
 

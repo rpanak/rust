@@ -10,10 +10,11 @@
 
 //! A priority queue implemented with a binary heap.
 //!
-//! Insertion and popping the largest element have `O(log n)` time complexity. Checking the largest
-//! element is `O(1)`. Converting a vector to a binary heap can be done in-place, and has `O(n)`
-//! complexity. A binary heap can also be converted to a sorted vector in-place, allowing it to
-//! be used for an `O(n log n)` in-place heapsort.
+//! Insertion and popping the largest element have `O(log n)` time complexity.
+//! Checking the largest element is `O(1)`. Converting a vector to a binary heap
+//! can be done in-place, and has `O(n)` complexity. A binary heap can also be
+//! converted to a sorted vector in-place, allowing it to be used for an `O(n
+//! log n)` in-place heapsort.
 //!
 //! # Examples
 //!
@@ -85,7 +86,7 @@
 //!
 //!         // For each node we can reach, see if we can find a way with
 //!         // a lower cost going through this node
-//!         for edge in adj_list[position].iter() {
+//!         for edge in &adj_list[position] {
 //!             let next = State { cost: cost + edge.cost, position: edge.node };
 //!
 //!             // If so, add it to the frontier and continue
@@ -111,7 +112,7 @@
 //!     //                  7
 //!     //          +-----------------+
 //!     //          |                 |
-//!     //          v   1        2    |
+//!     //          v   1        2    |  2
 //!     //          0 -----> 1 -----> 3 ---> 4
 //!     //          |        ^        ^      ^
 //!     //          |        | 1      |      |
@@ -150,11 +151,10 @@
 #![allow(missing_docs)]
 #![stable(feature = "rust1", since = "1.0.0")]
 
-use core::prelude::*;
-
 use core::iter::{FromIterator};
-use core::mem::{zeroed, replace, swap};
+use core::mem::swap;
 use core::ptr;
+use core::fmt;
 
 use slice;
 use vec::{self, Vec};
@@ -167,16 +167,33 @@ use vec::{self, Vec};
 /// item's ordering relative to any other item, as determined by the `Ord`
 /// trait, changes while it is in the heap. This is normally only possible
 /// through `Cell`, `RefCell`, global state, I/O, or unsafe code.
-#[derive(Clone)]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct BinaryHeap<T> {
     data: Vec<T>,
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
+impl<T: Clone> Clone for BinaryHeap<T> {
+    fn clone(&self) -> Self {
+        BinaryHeap { data: self.data.clone() }
+    }
+
+    fn clone_from(&mut self, source: &Self) {
+        self.data.clone_from(&source.data);
+    }
+}
+
+#[stable(feature = "rust1", since = "1.0.0")]
 impl<T: Ord> Default for BinaryHeap<T> {
     #[inline]
     fn default() -> BinaryHeap<T> { BinaryHeap::new() }
+}
+
+#[stable(feature = "binaryheap_debug", since = "1.4.0")]
+impl<T: fmt::Debug + Ord> fmt::Debug for BinaryHeap<T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_list().entries(self.iter()).finish()
+    }
 }
 
 impl<T: Ord> BinaryHeap<T> {
@@ -215,18 +232,18 @@ impl<T: Ord> BinaryHeap<T> {
     /// # Examples
     ///
     /// ```
-    /// # #![feature(collections)]
+    /// #![feature(binary_heap_extras)]
+    /// # #![allow(deprecated)]
+    ///
     /// use std::collections::BinaryHeap;
     /// let heap = BinaryHeap::from_vec(vec![9, 1, 2, 7, 3, 2]);
     /// ```
+    #[unstable(feature = "binary_heap_extras",
+               reason = "needs to be audited",
+               issue = "28147")]
+    #[deprecated(since = "1.5.0", reason = "use BinaryHeap::from instead")]
     pub fn from_vec(vec: Vec<T>) -> BinaryHeap<T> {
-        let mut heap = BinaryHeap { data: vec };
-        let mut n = heap.len() / 2;
-        while n > 0 {
-            n -= 1;
-            heap.sift_down(n);
-        }
-        heap
+        BinaryHeap::from(vec)
     }
 
     /// Returns an iterator visiting all values in the underlying vector, in
@@ -235,9 +252,8 @@ impl<T: Ord> BinaryHeap<T> {
     /// # Examples
     ///
     /// ```
-    /// # #![feature(collections)]
     /// use std::collections::BinaryHeap;
-    /// let heap = BinaryHeap::from_vec(vec![1, 2, 3, 4]);
+    /// let heap = BinaryHeap::from(vec![1, 2, 3, 4]);
     ///
     /// // Print 1, 2, 3, 4 in arbitrary order
     /// for x in heap.iter() {
@@ -340,9 +356,8 @@ impl<T: Ord> BinaryHeap<T> {
     /// # Examples
     ///
     /// ```
-    /// # #![feature(collections)]
     /// use std::collections::BinaryHeap;
-    /// let mut heap = BinaryHeap::from_vec(vec![1, 3]);
+    /// let mut heap = BinaryHeap::from(vec![1, 3]);
     ///
     /// assert_eq!(heap.pop(), Some(3));
     /// assert_eq!(heap.pop(), Some(1));
@@ -386,7 +401,8 @@ impl<T: Ord> BinaryHeap<T> {
     /// # Examples
     ///
     /// ```
-    /// # #![feature(collections)]
+    /// #![feature(binary_heap_extras)]
+    ///
     /// use std::collections::BinaryHeap;
     /// let mut heap = BinaryHeap::new();
     /// heap.push(1);
@@ -397,6 +413,9 @@ impl<T: Ord> BinaryHeap<T> {
     /// assert_eq!(heap.len(), 2);
     /// assert_eq!(heap.peek(), Some(&3));
     /// ```
+    #[unstable(feature = "binary_heap_extras",
+               reason = "needs to be audited",
+               issue = "28147")]
     pub fn push_pop(&mut self, mut item: T) -> T {
         match self.data.get_mut(0) {
             None => return item,
@@ -418,7 +437,8 @@ impl<T: Ord> BinaryHeap<T> {
     /// # Examples
     ///
     /// ```
-    /// # #![feature(collections)]
+    /// #![feature(binary_heap_extras)]
+    ///
     /// use std::collections::BinaryHeap;
     /// let mut heap = BinaryHeap::new();
     ///
@@ -427,6 +447,9 @@ impl<T: Ord> BinaryHeap<T> {
     /// assert_eq!(heap.len(), 1);
     /// assert_eq!(heap.peek(), Some(&3));
     /// ```
+    #[unstable(feature = "binary_heap_extras",
+               reason = "needs to be audited",
+               issue = "28147")]
     pub fn replace(&mut self, mut item: T) -> Option<T> {
         if !self.is_empty() {
             swap(&mut item, &mut self.data[0]);
@@ -444,17 +467,19 @@ impl<T: Ord> BinaryHeap<T> {
     /// # Examples
     ///
     /// ```
-    /// # #![feature(collections)]
     /// use std::collections::BinaryHeap;
-    /// let heap = BinaryHeap::from_vec(vec![1, 2, 3, 4, 5, 6, 7]);
+    /// let heap = BinaryHeap::from(vec![1, 2, 3, 4, 5, 6, 7]);
     /// let vec = heap.into_vec();
     ///
     /// // Will print in some order
-    /// for x in vec.iter() {
+    /// for x in vec {
     ///     println!("{}", x);
     /// }
     /// ```
-    pub fn into_vec(self) -> Vec<T> { self.data }
+    #[stable(feature = "binary_heap_extras_15", since = "1.5.0")]
+    pub fn into_vec(self) -> Vec<T> {
+        self.into()
+    }
 
     /// Consumes the `BinaryHeap` and returns a vector in sorted
     /// (ascending) order.
@@ -462,16 +487,16 @@ impl<T: Ord> BinaryHeap<T> {
     /// # Examples
     ///
     /// ```
-    /// # #![feature(collections)]
     /// use std::collections::BinaryHeap;
     ///
-    /// let mut heap = BinaryHeap::from_vec(vec![1, 2, 4, 5, 7]);
+    /// let mut heap = BinaryHeap::from(vec![1, 2, 4, 5, 7]);
     /// heap.push(6);
     /// heap.push(3);
     ///
     /// let vec = heap.into_sorted_vec();
     /// assert_eq!(vec, [1, 2, 3, 4, 5, 6, 7]);
     /// ```
+    #[stable(feature = "binary_heap_extras_15", since = "1.5.0")]
     pub fn into_sorted_vec(mut self) -> Vec<T> {
         let mut end = self.len();
         while end > 1 {
@@ -484,45 +509,42 @@ impl<T: Ord> BinaryHeap<T> {
 
     // The implementations of sift_up and sift_down use unsafe blocks in
     // order to move an element out of the vector (leaving behind a
-    // zeroed element), shift along the others and move it back into the
-    // vector over the junk element. This reduces the constant factor
-    // compared to using swaps, which involves twice as many moves.
-    fn sift_up(&mut self, start: usize, mut pos: usize) {
+    // hole), shift along the others and move the removed element back into the
+    // vector at the final location of the hole.
+    // The `Hole` type is used to represent this, and make sure
+    // the hole is filled back at the end of its scope, even on panic.
+    // Using a hole reduces the constant factor compared to using swaps,
+    // which involves twice as many moves.
+    fn sift_up(&mut self, start: usize, pos: usize) {
         unsafe {
-            let new = replace(&mut self.data[pos], zeroed());
+            // Take out the value at `pos` and create a hole.
+            let mut hole = Hole::new(&mut self.data, pos);
 
-            while pos > start {
-                let parent = (pos - 1) >> 1;
-
-                if new <= self.data[parent] { break; }
-
-                let x = replace(&mut self.data[parent], zeroed());
-                ptr::write(&mut self.data[pos], x);
-                pos = parent;
+            while hole.pos() > start {
+                let parent = (hole.pos() - 1) / 2;
+                if hole.element() <= hole.get(parent) { break; }
+                hole.move_to(parent);
             }
-            ptr::write(&mut self.data[pos], new);
         }
     }
 
-    fn sift_down_range(&mut self, mut pos: usize, end: usize) {
+    /// Take an element at `pos` and move it down the heap,
+    /// while its children are larger.
+    fn sift_down_range(&mut self, pos: usize, end: usize) {
         unsafe {
-            let start = pos;
-            let new = replace(&mut self.data[pos], zeroed());
-
+            let mut hole = Hole::new(&mut self.data, pos);
             let mut child = 2 * pos + 1;
             while child < end {
                 let right = child + 1;
-                if right < end && !(self.data[child] > self.data[right]) {
+                // compare with the greater of the two children
+                if right < end && !(hole.get(child) > hole.get(right)) {
                     child = right;
                 }
-                let x = replace(&mut self.data[child], zeroed());
-                ptr::write(&mut self.data[pos], x);
-                pos = child;
-                child = 2 * pos + 1;
+                // if we are already in order, stop.
+                if hole.element() >= hole.get(child) { break; }
+                hole.move_to(child);
+                child = 2 * hole.pos() + 1;
             }
-
-            ptr::write(&mut self.data[pos], new);
-            self.sift_up(start, pos);
         }
     }
 
@@ -543,8 +565,10 @@ impl<T: Ord> BinaryHeap<T> {
     ///
     /// The elements are removed in arbitrary order.
     #[inline]
-    #[unstable(feature = "collections",
-               reason = "matches collection reform specification, waiting for dust to settle")]
+    #[unstable(feature = "drain",
+               reason = "matches collection reform specification, \
+                         waiting for dust to settle",
+               issue = "27711")]
     pub fn drain(&mut self) -> Drain<T> {
         Drain { iter: self.data.drain(..) }
     }
@@ -552,6 +576,73 @@ impl<T: Ord> BinaryHeap<T> {
     /// Drops all items from the binary heap.
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn clear(&mut self) { self.drain(); }
+}
+
+/// Hole represents a hole in a slice i.e. an index without valid value
+/// (because it was moved from or duplicated).
+/// In drop, `Hole` will restore the slice by filling the hole
+/// position with the value that was originally removed.
+struct Hole<'a, T: 'a> {
+    data: &'a mut [T],
+    /// `elt` is always `Some` from new until drop.
+    elt: Option<T>,
+    pos: usize,
+}
+
+impl<'a, T> Hole<'a, T> {
+    /// Create a new Hole at index `pos`.
+    fn new(data: &'a mut [T], pos: usize) -> Self {
+        unsafe {
+            let elt = ptr::read(&data[pos]);
+            Hole {
+                data: data,
+                elt: Some(elt),
+                pos: pos,
+            }
+        }
+    }
+
+    #[inline(always)]
+    fn pos(&self) -> usize { self.pos }
+
+    /// Return a reference to the element removed
+    #[inline(always)]
+    fn element(&self) -> &T {
+        self.elt.as_ref().unwrap()
+    }
+
+    /// Return a reference to the element at `index`.
+    ///
+    /// Panics if the index is out of bounds.
+    ///
+    /// Unsafe because index must not equal pos.
+    #[inline(always)]
+    unsafe fn get(&self, index: usize) -> &T {
+        debug_assert!(index != self.pos);
+        &self.data[index]
+    }
+
+    /// Move hole to new location
+    ///
+    /// Unsafe because index must not equal pos.
+    #[inline(always)]
+    unsafe fn move_to(&mut self, index: usize) {
+        debug_assert!(index != self.pos);
+        let index_ptr: *const _ = &self.data[index];
+        let hole_ptr = &mut self.data[self.pos];
+        ptr::copy_nonoverlapping(index_ptr, hole_ptr, 1);
+        self.pos = index;
+    }
+}
+
+impl<'a, T> Drop for Hole<'a, T> {
+    fn drop(&mut self) {
+        // fill the hole again
+        unsafe {
+            let pos = self.pos;
+            ptr::write(&mut self.data[pos], self.elt.take().unwrap());
+        }
+    }
 }
 
 /// `BinaryHeap` iterator.
@@ -615,7 +706,7 @@ impl<T> DoubleEndedIterator for IntoIter<T> {
 impl<T> ExactSizeIterator for IntoIter<T> {}
 
 /// An iterator that drains a `BinaryHeap`.
-#[unstable(feature = "collections", reason = "recent addition")]
+#[unstable(feature = "drain", reason = "recent addition", issue = "27711")]
 pub struct Drain<'a, T: 'a> {
     iter: vec::Drain<'a, T>,
 }
@@ -641,9 +732,29 @@ impl<'a, T: 'a> DoubleEndedIterator for Drain<'a, T> {
 impl<'a, T: 'a> ExactSizeIterator for Drain<'a, T> {}
 
 #[stable(feature = "rust1", since = "1.0.0")]
+impl<T: Ord> From<Vec<T>> for BinaryHeap<T> {
+    fn from(vec: Vec<T>) -> BinaryHeap<T> {
+        let mut heap = BinaryHeap { data: vec };
+        let mut n = heap.len() / 2;
+        while n > 0 {
+            n -= 1;
+            heap.sift_down(n);
+        }
+        heap
+    }
+}
+
+#[stable(feature = "rust1", since = "1.0.0")]
+impl<T> From<BinaryHeap<T>> for Vec<T> {
+    fn from(heap: BinaryHeap<T>) -> Vec<T> {
+        heap.data
+    }
+}
+
+#[stable(feature = "rust1", since = "1.0.0")]
 impl<T: Ord> FromIterator<T> for BinaryHeap<T> {
     fn from_iter<I: IntoIterator<Item=T>>(iter: I) -> BinaryHeap<T> {
-        BinaryHeap::from_vec(iter.into_iter().collect())
+        BinaryHeap::from(iter.into_iter().collect::<Vec<_>>())
     }
 }
 
@@ -659,9 +770,8 @@ impl<T: Ord> IntoIterator for BinaryHeap<T> {
     /// # Examples
     ///
     /// ```
-    /// # #![feature(collections)]
     /// use std::collections::BinaryHeap;
-    /// let heap = BinaryHeap::from_vec(vec![1, 2, 3, 4]);
+    /// let heap = BinaryHeap::from(vec![1, 2, 3, 4]);
     ///
     /// // Print 1, 2, 3, 4 in arbitrary order
     /// for x in heap.into_iter() {
@@ -695,5 +805,12 @@ impl<T: Ord> Extend<T> for BinaryHeap<T> {
         for elem in iter {
             self.push(elem);
         }
+    }
+}
+
+#[stable(feature = "extend_ref", since = "1.2.0")]
+impl<'a, T: 'a + Ord + Copy> Extend<&'a T> for BinaryHeap<T> {
+    fn extend<I: IntoIterator<Item=&'a T>>(&mut self, iter: I) {
+        self.extend(iter.into_iter().cloned());
     }
 }

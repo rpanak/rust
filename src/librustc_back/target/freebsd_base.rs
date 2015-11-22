@@ -16,13 +16,9 @@ pub fn opts() -> TargetOptions {
         linker: "cc".to_string(),
         dynamic_linking: true,
         executables: true,
-        morestack: true,
         has_rpath: true,
-        pre_link_args: vec!(
-            "-L/usr/local/lib".to_string(),
-            "-L/usr/local/lib/gcc46".to_string(),
-            "-L/usr/local/lib/gcc44".to_string(),
-        ),
+        archive_format: "gnu".to_string(),
+        exe_allocation_crate: super::maybe_jemalloc(),
 
         .. Default::default()
     }

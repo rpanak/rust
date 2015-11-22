@@ -67,7 +67,7 @@
 // lldb-check:[...]$5 = Void
 
 // lldb-command:print some_str
-// lldb-check:[...]$6 = Some(&str { data_ptr: [...], length: 3 })
+// lldb-check:[...]$6 = Some("abc")
 
 // lldb-command:print none_str
 // lldb-check:[...]$7 = None
@@ -79,6 +79,7 @@
 // lldb-check:[...]$9 = Nope
 
 
+#![feature(omit_gdb_pretty_printer_section)]
 #![omit_gdb_pretty_printer_section]
 
 // If a struct has exactly two variants, one of them is empty, and the other one

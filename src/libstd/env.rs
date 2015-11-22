@@ -11,7 +11,7 @@
 //! Inspection and manipulation of the process's environment.
 //!
 //! This module contains methods to inspect various aspects such as
-//! environment varibles, process arguments, the current directory, and various
+//! environment variables, process arguments, the current directory, and various
 //! other important directories.
 
 #![stable(feature = "env", since = "1.0.0")]
@@ -23,8 +23,6 @@ use ffi::{OsStr, OsString};
 use fmt;
 use io;
 use path::{Path, PathBuf};
-use sync::atomic::{AtomicIsize, ATOMIC_ISIZE_INIT, Ordering};
-use sync::{StaticMutex, MUTEX_INIT};
 use sys::os as os_imp;
 
 /// Returns the current working directory as a `PathBuf`.
@@ -36,7 +34,6 @@ use sys::os as os_imp;
 ///
 /// * Current directory does not exist.
 /// * There are insufficient permissions to access the current directory.
-/// * The internal buffer is not large enough to hold the path.
 ///
 /// # Examples
 ///
@@ -69,8 +66,6 @@ pub fn current_dir() -> io::Result<PathBuf> {
 pub fn set_current_dir<P: AsRef<Path>>(p: P) -> io::Result<()> {
     os_imp::chdir(p.as_ref())
 }
-
-static ENV_LOCK: StaticMutex = MUTEX_INIT;
 
 /// An iterator over a snapshot of the environment variables of this process.
 ///
@@ -135,7 +130,6 @@ pub fn vars() -> Vars {
 /// ```
 #[stable(feature = "env", since = "1.0.0")]
 pub fn vars_os() -> VarsOs {
-    let _g = ENV_LOCK.lock();
     VarsOs { inner: os_imp::env() }
 }
 
@@ -176,6 +170,10 @@ impl Iterator for VarsOs {
 /// ```
 #[stable(feature = "env", since = "1.0.0")]
 pub fn var<K: AsRef<OsStr>>(key: K) -> Result<String, VarError> {
+    _var(key.as_ref())
+}
+
+fn _var(key: &OsStr) -> Result<String, VarError> {
     match var_os(key) {
         Some(s) => s.into_string().map_err(VarError::NotUnicode),
         None => Err(VarError::NotPresent)
@@ -198,8 +196,13 @@ pub fn var<K: AsRef<OsStr>>(key: K) -> Result<String, VarError> {
 /// ```
 #[stable(feature = "env", since = "1.0.0")]
 pub fn var_os<K: AsRef<OsStr>>(key: K) -> Option<OsString> {
-    let _g = ENV_LOCK.lock();
-    os_imp::getenv(key.as_ref())
+    _var_os(key.as_ref())
+}
+
+fn _var_os(key: &OsStr) -> Option<OsString> {
+    os_imp::getenv(key).unwrap_or_else(|e| {
+        panic!("failed to get environment variable `{:?}`: {}", key, e)
+    })
 }
 
 /// Possible errors from the `env::var` method.
@@ -254,6 +257,12 @@ impl Error for VarError {
 ///  - [Austin Group Bugzilla](http://austingroupbugs.net/view.php?id=188)
 ///  - [GNU C library Bugzilla](https://sourceware.org/bugzilla/show_bug.cgi?id=15607#c2)
 ///
+/// # Panics
+///
+/// This function may panic if `key` is empty, contains an ASCII equals sign
+/// `'='` or the NUL character `'\0'`, or when the value contains the NUL
+/// character.
+///
 /// # Examples
 ///
 /// ```
@@ -265,8 +274,14 @@ impl Error for VarError {
 /// ```
 #[stable(feature = "env", since = "1.0.0")]
 pub fn set_var<K: AsRef<OsStr>, V: AsRef<OsStr>>(k: K, v: V) {
-    let _g = ENV_LOCK.lock();
-    os_imp::setenv(k.as_ref(), v.as_ref())
+    _set_var(k.as_ref(), v.as_ref())
+}
+
+fn _set_var(k: &OsStr, v: &OsStr) {
+    os_imp::setenv(k, v).unwrap_or_else(|e| {
+        panic!("failed to set environment variable `{:?}` to `{:?}`: {}",
+               k, v, e)
+    })
 }
 
 /// Removes an environment variable from the environment of the currently running process.
@@ -282,6 +297,12 @@ pub fn set_var<K: AsRef<OsStr>, V: AsRef<OsStr>>(k: K, v: V) {
 ///  - [Austin Group Bugzilla](http://austingroupbugs.net/view.php?id=188)
 ///  - [GNU C library Bugzilla](https://sourceware.org/bugzilla/show_bug.cgi?id=15607#c2)
 ///
+/// # Panics
+///
+/// This function may panic if `key` is empty, contains an ASCII equals sign
+/// `'='` or the NUL character `'\0'`, or when the value contains the NUL
+/// character.
+///
 /// # Examples
 ///
 /// ```
@@ -296,8 +317,13 @@ pub fn set_var<K: AsRef<OsStr>, V: AsRef<OsStr>>(k: K, v: V) {
 /// ```
 #[stable(feature = "env", since = "1.0.0")]
 pub fn remove_var<K: AsRef<OsStr>>(k: K) {
-    let _g = ENV_LOCK.lock();
-    os_imp::unsetenv(k.as_ref())
+    _remove_var(k.as_ref())
+}
+
+fn _remove_var(k: &OsStr) {
+    os_imp::unsetenv(k).unwrap_or_else(|e| {
+        panic!("failed to remove environment variable `{:?}`: {}", k, e)
+    })
 }
 
 /// An iterator over `Path` instances for parsing an environment variable
@@ -365,7 +391,7 @@ pub struct JoinPathsError {
 /// if let Some(path) = env::var_os("PATH") {
 ///     let mut paths = env::split_paths(&path).collect::<Vec<_>>();
 ///     paths.push(PathBuf::from("/home/xyz/bin"));
-///     let new_path = env::join_paths(paths.iter()).unwrap();
+///     let new_path = env::join_paths(paths).unwrap();
 ///     env::set_var("PATH", &new_path);
 /// }
 /// ```
@@ -390,19 +416,24 @@ impl Error for JoinPathsError {
     fn description(&self) -> &str { self.inner.description() }
 }
 
-/// Optionally returns the path to the current user's home directory if known.
+/// Returns the path to the current user's home directory if known.
 ///
 /// # Unix
 ///
 /// Returns the value of the 'HOME' environment variable if it is set
-/// and not equal to the empty string.
+/// and not equal to the empty string. Otherwise, it tries to determine the
+/// home directory by invoking the `getpwuid_r` function on the UID of the
+/// current user.
 ///
 /// # Windows
 ///
 /// Returns the value of the 'HOME' environment variable if it is
 /// set and not equal to the empty string. Otherwise, returns the value of the
 /// 'USERPROFILE' environment variable if it is set and not equal to the empty
-/// string.
+/// string. If both do not exist, [`GetUserProfileDirectory`][msdn] is used to
+/// return the appropriate path.
+///
+/// [msdn]: https://msdn.microsoft.com/en-us/library/windows/desktop/bb762280(v=vs.85).aspx
 ///
 /// # Examples
 ///
@@ -428,7 +459,11 @@ pub fn home_dir() -> Option<PathBuf> {
 ///
 /// On Windows, returns the value of, in order, the 'TMP', 'TEMP',
 /// 'USERPROFILE' environment variable  if any are set and not the empty
-/// string. Otherwise, tmpdir returns the path to the Windows directory.
+/// string. Otherwise, tmpdir returns the path to the Windows directory. This
+/// behavior is identical to that of [GetTempPath][msdn], which this function
+/// uses internally.
+///
+/// [msdn]: https://msdn.microsoft.com/en-us/library/windows/desktop/aa364992(v=vs.85).aspx
 ///
 /// ```
 /// use std::env;
@@ -447,8 +482,8 @@ pub fn temp_dir() -> PathBuf {
     os_imp::temp_dir()
 }
 
-/// Optionally returns the filesystem path to the current executable which is
-/// running but with the executable name.
+/// Returns the filesystem path to the current executable which is running but
+/// with the executable name.
 ///
 /// The path returned is not necessarily a "real path" to the executable as
 /// there may be intermediate symlinks.
@@ -473,28 +508,6 @@ pub fn temp_dir() -> PathBuf {
 #[stable(feature = "env", since = "1.0.0")]
 pub fn current_exe() -> io::Result<PathBuf> {
     os_imp::current_exe()
-}
-
-static EXIT_STATUS: AtomicIsize = ATOMIC_ISIZE_INIT;
-
-/// Sets the process exit code
-///
-/// Sets the exit code returned by the process if all supervised threads
-/// terminate successfully (without panicking). If the current root thread panics
-/// and is supervised by the scheduler then any user-specified exit status is
-/// ignored and the process exits with the default panic status.
-///
-/// Note that this is not synchronized against modifications of other threads.
-#[unstable(feature = "exit_status", reason = "managing the exit status may change")]
-pub fn set_exit_status(code: i32) {
-    EXIT_STATUS.store(code as isize, Ordering::SeqCst)
-}
-
-/// Fetches the process's current exit code. This defaults to 0 and can change
-/// by calling `set_exit_status`.
-#[unstable(feature = "exit_status", reason = "managing the exit status may change")]
-pub fn get_exit_status() -> i32 {
-    EXIT_STATUS.load(Ordering::SeqCst) as i32
 }
 
 /// An iterator over the arguments of a process, yielding a `String` value
@@ -587,51 +600,100 @@ impl ExactSizeIterator for ArgsOs {
     fn len(&self) -> usize { self.inner.len() }
 }
 
-/// Returns the page size of the current architecture in bytes.
-#[unstable(feature = "page_size", reason = "naming and/or location may change")]
-pub fn page_size() -> usize {
-    os_imp::page_size()
-}
-
 /// Constants associated with the current target
 #[stable(feature = "env", since = "1.0.0")]
 pub mod consts {
     /// A string describing the architecture of the CPU that this is currently
     /// in use.
+    ///
+    /// Some possible values:
+    ///
+    /// - x86
+    /// - x86_64
+    /// - arm
+    /// - aarch64
+    /// - mips
+    /// - mipsel
+    /// - powerpc
     #[stable(feature = "env", since = "1.0.0")]
     pub const ARCH: &'static str = super::arch::ARCH;
 
     /// The family of the operating system. In this case, `unix`.
+    ///
+    /// Some possible values:
+    ///
+    /// - unix
+    /// - windows
     #[stable(feature = "env", since = "1.0.0")]
     pub const FAMILY: &'static str = super::os::FAMILY;
 
     /// A string describing the specific operating system in use: in this
     /// case, `linux`.
+    ///
+    /// Some possible values:
+    ///
+    /// - linux
+    /// - macos
+    /// - ios
+    /// - freebsd
+    /// - dragonfly
+    /// - bitrig
+    /// - netbsd
+    /// - openbsd
+    /// - android
+    /// - windows
     #[stable(feature = "env", since = "1.0.0")]
     pub const OS: &'static str = super::os::OS;
 
     /// Specifies the filename prefix used for shared libraries on this
     /// platform: in this case, `lib`.
+    ///
+    /// Some possible values:
+    ///
+    /// - lib
+    /// - `""` (an empty string)
     #[stable(feature = "env", since = "1.0.0")]
     pub const DLL_PREFIX: &'static str = super::os::DLL_PREFIX;
 
     /// Specifies the filename suffix used for shared libraries on this
     /// platform: in this case, `.so`.
+    ///
+    /// Some possible values:
+    ///
+    /// - .so
+    /// - .dylib
+    /// - .dll
     #[stable(feature = "env", since = "1.0.0")]
     pub const DLL_SUFFIX: &'static str = super::os::DLL_SUFFIX;
 
     /// Specifies the file extension used for shared libraries on this
     /// platform that goes after the dot: in this case, `so`.
+    ///
+    /// Some possible values:
+    ///
+    /// - .so
+    /// - .dylib
+    /// - .dll
     #[stable(feature = "env", since = "1.0.0")]
     pub const DLL_EXTENSION: &'static str = super::os::DLL_EXTENSION;
 
     /// Specifies the filename suffix used for executable binaries on this
     /// platform: in this case, the empty string.
+    ///
+    /// Some possible values:
+    ///
+    /// - exe
+    /// - `""` (an empty string)
     #[stable(feature = "env", since = "1.0.0")]
     pub const EXE_SUFFIX: &'static str = super::os::EXE_SUFFIX;
 
     /// Specifies the file extension, if any, used for executable binaries
     /// on this platform: in this case, the empty string.
+    ///
+    /// Some possible values:
+    ///
+    /// - exe
+    /// - `""` (an empty string)
     #[stable(feature = "env", since = "1.0.0")]
     pub const EXE_EXTENSION: &'static str = super::os::EXE_EXTENSION;
 
@@ -703,6 +765,17 @@ mod os {
     pub const EXE_EXTENSION: &'static str = "";
 }
 
+#[cfg(target_os = "netbsd")]
+mod os {
+    pub const FAMILY: &'static str = "unix";
+    pub const OS: &'static str = "netbsd";
+    pub const DLL_PREFIX: &'static str = "lib";
+    pub const DLL_SUFFIX: &'static str = ".so";
+    pub const DLL_EXTENSION: &'static str = "so";
+    pub const EXE_SUFFIX: &'static str = "";
+    pub const EXE_EXTENSION: &'static str = "";
+}
+
 #[cfg(target_os = "openbsd")]
 mod os {
     pub const FAMILY: &'static str = "unix";
@@ -734,6 +807,27 @@ mod os {
     pub const DLL_EXTENSION: &'static str = "dll";
     pub const EXE_SUFFIX: &'static str = ".exe";
     pub const EXE_EXTENSION: &'static str = "exe";
+}
+
+#[cfg(all(target_os = "nacl", not(target_arch = "le32")))]
+mod os {
+    pub const FAMILY: &'static str = "unix";
+    pub const OS: &'static str = "nacl";
+    pub const DLL_PREFIX: &'static str = "lib";
+    pub const DLL_SUFFIX: &'static str = ".so";
+    pub const DLL_EXTENSION: &'static str = "so";
+    pub const EXE_SUFFIX: &'static str = ".nexe";
+    pub const EXE_EXTENSION: &'static str = "nexe";
+}
+#[cfg(all(target_os = "nacl", target_arch = "le32"))]
+mod os {
+    pub const FAMILY: &'static str = "unix";
+    pub const OS: &'static str = "pnacl";
+    pub const DLL_PREFIX: &'static str = "lib";
+    pub const DLL_SUFFIX: &'static str = ".pso";
+    pub const DLL_EXTENSION: &'static str = "pso";
+    pub const EXE_SUFFIX: &'static str = ".pexe";
+    pub const EXE_EXTENSION: &'static str = "pexe";
 }
 
 #[cfg(target_arch = "x86")]
@@ -769,6 +863,11 @@ mod arch {
 #[cfg(target_arch = "powerpc")]
 mod arch {
     pub const ARCH: &'static str = "powerpc";
+}
+
+#[cfg(target_arch = "le32")]
+mod arch {
+    pub const ARCH: &'static str = "le32";
 }
 
 #[cfg(test)]

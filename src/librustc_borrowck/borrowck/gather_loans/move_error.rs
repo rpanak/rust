@@ -10,31 +10,30 @@
 
 use borrowck::BorrowckCtxt;
 use rustc::middle::mem_categorization as mc;
+use rustc::middle::mem_categorization::Categorization;
 use rustc::middle::mem_categorization::InteriorOffsetKind as Kind;
 use rustc::middle::ty;
-use rustc::util::ppaux::UserString;
-use std::cell::RefCell;
 use syntax::ast;
 use syntax::codemap;
-use syntax::print::pprust;
+use rustc_front::hir;
 
 pub struct MoveErrorCollector<'tcx> {
-    errors: RefCell<Vec<MoveError<'tcx>>>
+    errors: Vec<MoveError<'tcx>>
 }
 
 impl<'tcx> MoveErrorCollector<'tcx> {
     pub fn new() -> MoveErrorCollector<'tcx> {
         MoveErrorCollector {
-            errors: RefCell::new(Vec::new())
+            errors: Vec::new()
         }
     }
 
-    pub fn add_error(&self, error: MoveError<'tcx>) {
-        self.errors.borrow_mut().push(error);
+    pub fn add_error(&mut self, error: MoveError<'tcx>) {
+        self.errors.push(error);
     }
 
     pub fn report_potential_errors<'a>(&self, bccx: &BorrowckCtxt<'a, 'tcx>) {
-        report_move_errors(bccx, &*self.errors.borrow())
+        report_move_errors(bccx, &self.errors)
     }
 }
 
@@ -57,7 +56,7 @@ impl<'tcx> MoveError<'tcx> {
 #[derive(Clone)]
 pub struct MoveSpanAndPath {
     pub span: codemap::Span,
-    pub ident: ast::Ident
+    pub name: ast::Name,
 }
 
 pub struct GroupedMoveErrors<'tcx> {
@@ -73,7 +72,7 @@ fn report_move_errors<'a, 'tcx>(bccx: &BorrowckCtxt<'a, 'tcx>,
         let mut is_first_note = true;
         for move_to in &error.move_to_places {
             note_move_destination(bccx, move_to.span,
-                                  &move_to.ident, is_first_note);
+                                  move_to.name, is_first_note);
             is_first_note = false;
         }
     }
@@ -99,7 +98,7 @@ fn group_errors_with_same_origin<'tcx>(errors: &Vec<MoveError<'tcx>>)
         for ge in &mut *grouped_errors {
             if move_from_id == ge.move_from.id && error.move_to.is_some() {
                 debug!("appending move_to to list");
-                ge.move_to_places.extend(move_to.into_iter());
+                ge.move_to_places.extend(move_to);
                 return
             }
         }
@@ -115,35 +114,34 @@ fn group_errors_with_same_origin<'tcx>(errors: &Vec<MoveError<'tcx>>)
 fn report_cannot_move_out_of<'a, 'tcx>(bccx: &BorrowckCtxt<'a, 'tcx>,
                                        move_from: mc::cmt<'tcx>) {
     match move_from.cat {
-        mc::cat_deref(_, _, mc::BorrowedPtr(..)) |
-        mc::cat_deref(_, _, mc::Implicit(..)) |
-        mc::cat_deref(_, _, mc::UnsafePtr(..)) |
-        mc::cat_static_item => {
-            bccx.span_err(move_from.span,
-                          &format!("cannot move out of {}",
-                                  move_from.descriptive_string(bccx.tcx)));
+        Categorization::Deref(_, _, mc::BorrowedPtr(..)) |
+        Categorization::Deref(_, _, mc::Implicit(..)) |
+        Categorization::Deref(_, _, mc::UnsafePtr(..)) |
+        Categorization::StaticItem => {
+            span_err!(bccx, move_from.span, E0507,
+                      "cannot move out of {}",
+                      move_from.descriptive_string(bccx.tcx));
         }
 
-        mc::cat_interior(ref b, mc::InteriorElement(Kind::Index, _)) => {
+        Categorization::Interior(ref b, mc::InteriorElement(Kind::Index, _)) => {
             let expr = bccx.tcx.map.expect_expr(move_from.id);
-            if let ast::ExprIndex(..) = expr.node {
-                bccx.span_err(move_from.span,
-                              &format!("cannot move out of type `{}`, \
-                                        a non-copy fixed-size array",
-                                       b.ty.user_string(bccx.tcx)));
+            if let hir::ExprIndex(..) = expr.node {
+                span_err!(bccx, move_from.span, E0508,
+                          "cannot move out of type `{}`, \
+                           a non-copy fixed-size array",
+                          b.ty);
             }
         }
 
-        mc::cat_downcast(ref b, _) |
-        mc::cat_interior(ref b, mc::InteriorField(_)) => {
+        Categorization::Downcast(ref b, _) |
+        Categorization::Interior(ref b, mc::InteriorField(_)) => {
             match b.ty.sty {
-                ty::ty_struct(did, _) |
-                ty::ty_enum(did, _) if ty::has_dtor(bccx.tcx, did) => {
-                    bccx.span_err(
-                        move_from.span,
-                        &format!("cannot move out of type `{}`, \
-                                 which defines the `Drop` trait",
-                                b.ty.user_string(bccx.tcx)));
+                ty::TyStruct(def, _) |
+                ty::TyEnum(def, _) if def.has_dtor() => {
+                    span_err!(bccx, move_from.span, E0509,
+                              "cannot move out of type `{}`, \
+                               which defines the `Drop` trait",
+                              b.ty);
                 },
                 _ => {
                     bccx.span_bug(move_from.span, "this path should not cause illegal move")
@@ -158,9 +156,8 @@ fn report_cannot_move_out_of<'a, 'tcx>(bccx: &BorrowckCtxt<'a, 'tcx>,
 
 fn note_move_destination(bccx: &BorrowckCtxt,
                          move_to_span: codemap::Span,
-                         pat_ident: &ast::Ident,
+                         pat_name: ast::Name,
                          is_first_note: bool) {
-    let pat_name = pprust::ident_to_string(pat_ident);
     if is_first_note {
         bccx.span_note(
             move_to_span,

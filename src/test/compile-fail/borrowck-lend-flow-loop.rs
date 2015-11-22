@@ -22,7 +22,7 @@ fn cond() -> bool { panic!() }
 fn produce<T>() -> T { panic!(); }
 
 fn inc(v: &mut Box<isize>) {
-    *v = box() (**v + 1);
+    *v = box (**v + 1);
 }
 
 fn loop_overarching_alias_mut() {

@@ -8,11 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#![feature(unboxed_closures, std_misc)]
-
-use std::thunk::Thunk;
-
-fn action(cb: Thunk<(usize,), usize>) -> usize {
+fn action(mut cb: Box<FnMut(usize) -> usize>) -> usize {
     cb(1)
 }
 

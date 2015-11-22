@@ -24,6 +24,8 @@
 use marker::Sized;
 
 /// A common trait for cloning an object.
+///
+/// This trait can be used with `#[derive]`.
 #[stable(feature = "rust1", since = "1.0.0")]
 pub trait Clone : Sized {
     /// Returns a copy of the value.
@@ -86,46 +88,3 @@ clone_impl! { f64 }
 clone_impl! { () }
 clone_impl! { bool }
 clone_impl! { char }
-
-macro_rules! extern_fn_clone {
-    ($($A:ident),*) => (
-        #[unstable(feature = "core",
-                   reason = "this may not be sufficient for fns with region parameters")]
-        impl<$($A,)* ReturnType> Clone for extern "Rust" fn($($A),*) -> ReturnType {
-            /// Returns a copy of a function pointer.
-            #[inline]
-            fn clone(&self) -> extern "Rust" fn($($A),*) -> ReturnType { *self }
-        }
-
-        #[unstable(feature = "core", reason = "brand new")]
-        impl<$($A,)* ReturnType> Clone for extern "C" fn($($A),*) -> ReturnType {
-            /// Returns a copy of a function pointer.
-            #[inline]
-            fn clone(&self) -> extern "C" fn($($A),*) -> ReturnType { *self }
-        }
-
-        #[unstable(feature = "core", reason = "brand new")]
-        impl<$($A,)* ReturnType> Clone for unsafe extern "Rust" fn($($A),*) -> ReturnType {
-            /// Returns a copy of a function pointer.
-            #[inline]
-            fn clone(&self) -> unsafe extern "Rust" fn($($A),*) -> ReturnType { *self }
-        }
-
-        #[unstable(feature = "core", reason = "brand new")]
-        impl<$($A,)* ReturnType> Clone for unsafe extern "C" fn($($A),*) -> ReturnType {
-            /// Returns a copy of a function pointer.
-            #[inline]
-            fn clone(&self) -> unsafe extern "C" fn($($A),*) -> ReturnType { *self }
-        }
-    )
-}
-
-extern_fn_clone! {}
-extern_fn_clone! { A }
-extern_fn_clone! { A, B }
-extern_fn_clone! { A, B, C }
-extern_fn_clone! { A, B, C, D }
-extern_fn_clone! { A, B, C, D, E }
-extern_fn_clone! { A, B, C, D, E, F }
-extern_fn_clone! { A, B, C, D, E, F, G }
-extern_fn_clone! { A, B, C, D, E, F, G, H }

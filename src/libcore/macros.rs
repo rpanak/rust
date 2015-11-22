@@ -10,13 +10,14 @@
 
 /// Entry point of thread panic, for details, see std::macros
 #[macro_export]
+#[allow_internal_unstable]
 macro_rules! panic {
     () => (
         panic!("explicit panic")
     );
     ($msg:expr) => ({
         static _MSG_FILE_LINE: (&'static str, &'static str, u32) = ($msg, file!(), line!());
-        ::core::panicking::panic(&_MSG_FILE_LINE)
+        $crate::panicking::panic(&_MSG_FILE_LINE)
     });
     ($fmt:expr, $($arg:tt)*) => ({
         // The leading _'s are to avoid dead code warnings if this is
@@ -24,7 +25,7 @@ macro_rules! panic {
         // insufficient, since the user may have
         // `#[forbid(dead_code)]` and which cannot be overridden.
         static _FILE_LINE: (&'static str, u32) = (file!(), line!());
-        ::core::panicking::panic_fmt(format_args!($fmt, $($arg)*), &_FILE_LINE)
+        $crate::panicking::panic_fmt(format_args!($fmt, $($arg)*), &_FILE_LINE)
     });
 }
 
@@ -32,6 +33,8 @@ macro_rules! panic {
 ///
 /// This will invoke the `panic!` macro if the provided expression cannot be
 /// evaluated to `true` at runtime.
+///
+/// This macro has a second version, where a custom panic message can be provided.
 ///
 /// # Examples
 ///
@@ -86,7 +89,7 @@ macro_rules! assert_eq {
             (left_val, right_val) => {
                 if !(*left_val == *right_val) {
                     panic!("assertion failed: `(left == right)` \
-                           (left: `{:?}`, right: `{:?}`)", *left_val, *right_val)
+                           (left: `{:?}`, right: `{:?}`)", left_val, right_val)
                 }
             }
         }
@@ -97,6 +100,9 @@ macro_rules! assert_eq {
 ///
 /// This will invoke the `panic!` macro if the provided expression cannot be
 /// evaluated to `true` at runtime.
+///
+/// Like `assert!`, this macro also has a second version, where a custom panic
+/// message can be provided.
 ///
 /// Unlike `assert!`, `debug_assert!` statements are only enabled in non
 /// optimized builds by default. An optimized build will omit all
@@ -167,26 +173,51 @@ macro_rules! try {
     })
 }
 
-/// Use the `format!` syntax to write data into a buffer of type `&mut Write`.
-/// See `std::fmt` for more information.
+/// Use the `format!` syntax to write data into a buffer.
+///
+/// This macro is typically used with a buffer of `&mut `[`Write`][write].
+///
+/// See [`std::fmt`][fmt] for more information on format syntax.
+///
+/// [fmt]: fmt/index.html
+/// [write]: io/trait.Write.html
 ///
 /// # Examples
 ///
 /// ```
-/// # #![allow(unused_must_use)]
 /// use std::io::Write;
 ///
 /// let mut w = Vec::new();
-/// write!(&mut w, "test");
-/// write!(&mut w, "formatted {}", "arguments");
+/// write!(&mut w, "test").unwrap();
+/// write!(&mut w, "formatted {}", "arguments").unwrap();
+///
+/// assert_eq!(w, b"testformatted arguments");
 /// ```
 #[macro_export]
 macro_rules! write {
     ($dst:expr, $($arg:tt)*) => ($dst.write_fmt(format_args!($($arg)*)))
 }
 
-/// Equivalent to the `write!` macro, except that a newline is appended after
-/// the message is written.
+/// Use the `format!` syntax to write data into a buffer, appending a newline.
+///
+/// This macro is typically used with a buffer of `&mut `[`Write`][write].
+///
+/// See [`std::fmt`][fmt] for more information on format syntax.
+///
+/// [fmt]: fmt/index.html
+/// [write]: io/trait.Write.html
+///
+/// # Examples
+///
+/// ```
+/// use std::io::Write;
+///
+/// let mut w = Vec::new();
+/// writeln!(&mut w, "test").unwrap();
+/// writeln!(&mut w, "formatted {}", "arguments").unwrap();
+///
+/// assert_eq!(&w[..], "test\nformatted arguments\n".as_bytes());
+/// ```
 #[macro_export]
 #[stable(feature = "rust1", since = "1.0.0")]
 macro_rules! writeln {
@@ -216,6 +247,7 @@ macro_rules! writeln {
 /// Match arms:
 ///
 /// ```
+/// # #[allow(dead_code)]
 /// fn foo(x: Option<i32>) {
 ///     match x {
 ///         Some(n) if n >= 0 => println!("Some(Non-negative)"),
@@ -229,6 +261,7 @@ macro_rules! writeln {
 /// Iterators:
 ///
 /// ```
+/// # #[allow(dead_code)]
 /// fn divide_by_three(x: u32) -> u32 { // one of the poorest implementations of x/3
 ///     for i in 0.. {
 ///         if 3*i < i { panic!("u32 overflow"); }
@@ -239,7 +272,8 @@ macro_rules! writeln {
 /// ```
 #[macro_export]
 #[unstable(feature = "core",
-           reason = "relationship with panic is unclear")]
+           reason = "relationship with panic is unclear",
+           issue = "27701")]
 macro_rules! unreachable {
     () => ({
         panic!("internal error: entered unreachable code")
@@ -252,11 +286,57 @@ macro_rules! unreachable {
     });
 }
 
-/// A standardised placeholder for marking unfinished code. It panics with the
+/// A standardized placeholder for marking unfinished code. It panics with the
 /// message `"not yet implemented"` when executed.
+///
+/// This can be useful if you are prototyping and are just looking to have your
+/// code typecheck, or if you're implementing a trait that requires multiple
+/// methods, and you're only planning on using one of them.
+///
+/// # Examples
+///
+/// Here's an example of some in-progress code. We have a trait `Foo`:
+///
+/// ```
+/// trait Foo {
+///     fn bar(&self);
+///     fn baz(&self);
+/// }
+/// ```
+///
+/// We want to implement `Foo` on one of our types, but we also want to work on
+/// just `bar()` first. In order for our code to compile, we need to implement
+/// `baz()`, so we can use `unimplemented!`:
+///
+/// ```
+/// # trait Foo {
+/// #     fn bar(&self);
+/// #     fn baz(&self);
+/// # }
+/// struct MyStruct;
+///
+/// impl Foo for MyStruct {
+///     fn bar(&self) {
+///         // implementation goes here
+///     }
+///
+///     fn baz(&self) {
+///         // let's not worry about implementing baz() for now
+///         unimplemented!();
+///     }
+/// }
+///
+/// fn main() {
+///     let s = MyStruct;
+///     s.bar();
+///
+///     // we aren't even using baz() yet, so this is fine.
+/// }
+/// ```
 #[macro_export]
 #[unstable(feature = "core",
-           reason = "relationship with panic is unclear")]
+           reason = "relationship with panic is unclear",
+           issue = "27701")]
 macro_rules! unimplemented {
     () => (panic!("not yet implemented"))
 }

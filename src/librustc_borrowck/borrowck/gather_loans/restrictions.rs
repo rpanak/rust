@@ -15,8 +15,8 @@ pub use self::RestrictionResult::*;
 use borrowck::*;
 use rustc::middle::expr_use_visitor as euv;
 use rustc::middle::mem_categorization as mc;
+use rustc::middle::mem_categorization::Categorization;
 use rustc::middle::ty;
-use rustc::util::ppaux::Repr;
 use syntax::codemap::Span;
 
 use borrowck::ToInteriorKind;
@@ -58,12 +58,12 @@ struct RestrictionsContext<'a, 'tcx: 'a> {
 impl<'a, 'tcx> RestrictionsContext<'a, 'tcx> {
     fn restrict(&self,
                 cmt: mc::cmt<'tcx>) -> RestrictionResult<'tcx> {
-        debug!("restrict(cmt={})", cmt.repr(self.bccx.tcx));
+        debug!("restrict(cmt={:?})", cmt);
 
         let new_lp = |v: LoanPathKind<'tcx>| Rc::new(LoanPath::new(v, cmt.ty));
 
         match cmt.cat.clone() {
-            mc::cat_rvalue(..) => {
+            Categorization::Rvalue(..) => {
                 // Effectively, rvalues are stored into a
                 // non-aliasable temporary on the stack. Since they
                 // are inherently non-aliasable, they can only be
@@ -72,26 +72,26 @@ impl<'a, 'tcx> RestrictionsContext<'a, 'tcx> {
                 Safe
             }
 
-            mc::cat_local(local_id) => {
+            Categorization::Local(local_id) => {
                 // R-Variable, locally declared
                 let lp = new_lp(LpVar(local_id));
                 SafeIf(lp.clone(), vec![lp])
             }
 
-            mc::cat_upvar(mc::Upvar { id, .. }) => {
+            Categorization::Upvar(mc::Upvar { id, .. }) => {
                 // R-Variable, captured into closure
                 let lp = new_lp(LpUpvar(id));
                 SafeIf(lp.clone(), vec![lp])
             }
 
-            mc::cat_downcast(cmt_base, _) => {
+            Categorization::Downcast(cmt_base, _) => {
                 // When we borrow the interior of an enum, we have to
                 // ensure the enum itself is not mutated, because that
                 // could cause the type of the memory to change.
                 self.restrict(cmt_base)
             }
 
-            mc::cat_interior(cmt_base, i) => {
+            Categorization::Interior(cmt_base, i) => {
                 // R-Field
                 //
                 // Overwriting the base would not change the type of
@@ -101,16 +101,16 @@ impl<'a, 'tcx> RestrictionsContext<'a, 'tcx> {
                 self.extend(result, &cmt, LpInterior(i.cleaned()))
             }
 
-            mc::cat_static_item(..) => {
+            Categorization::StaticItem(..) => {
                 Safe
             }
 
-            mc::cat_deref(cmt_base, _, pk) => {
+            Categorization::Deref(cmt_base, _, pk) => {
                 match pk {
                     mc::Unique => {
                         // R-Deref-Send-Pointer
                         //
-                        // When we borrow the interior of an owned pointer, we
+                        // When we borrow the interior of a box, we
                         // cannot permit the base to be mutated, because that
                         // would cause the unique pointer to be freed.
                         //
@@ -125,7 +125,7 @@ impl<'a, 'tcx> RestrictionsContext<'a, 'tcx> {
                             self.bccx.report(
                                 BckError {
                                     span: self.span,
-                                    cause: self.cause,
+                                    cause: BorrowViolation(self.cause),
                                     cmt: cmt_base,
                                     code: err_borrowed_pointer_too_short(
                                         self.loan_region, lt)});
@@ -145,7 +145,7 @@ impl<'a, 'tcx> RestrictionsContext<'a, 'tcx> {
                             }
                         }
                     }
-                    // Borrowck is not relevant for unsafe pointers
+                    // Borrowck is not relevant for raw pointers
                     mc::UnsafePtr(..) => Safe
                 }
             }

@@ -15,7 +15,6 @@ pub use self::imp::OsRng;
 
 #[cfg(all(unix, not(target_os = "ios")))]
 mod imp {
-    use prelude::v1::*;
     use self::OsRngInner::*;
 
     use fs::File;
@@ -41,10 +40,10 @@ mod imp {
         const NR_GETRANDOM: libc::c_long = 318;
         #[cfg(target_arch = "x86")]
         const NR_GETRANDOM: libc::c_long = 355;
-        #[cfg(any(target_arch = "arm", target_arch = "aarch64"))]
+        #[cfg(any(target_arch = "arm", target_arch = "powerpc"))]
         const NR_GETRANDOM: libc::c_long = 384;
-        #[cfg(target_arch = "powerpc")]
-        const NR_GETRANDOM: libc::c_long = 384;
+        #[cfg(any(target_arch = "aarch64"))]
+        const NR_GETRANDOM: libc::c_long = 278;
 
         unsafe {
             syscall(NR_GETRANDOM, buf.as_mut_ptr(), buf.len(), 0)
@@ -96,11 +95,11 @@ mod imp {
                   target_arch = "aarch64",
                   target_arch = "powerpc")))]
     fn is_getrandom_available() -> bool {
-        use sync::atomic::{AtomicBool, ATOMIC_BOOL_INIT, Ordering};
-        use sync::{Once, ONCE_INIT};
+        use sync::atomic::{AtomicBool, Ordering};
+        use sync::Once;
 
-        static CHECKER: Once = ONCE_INIT;
-        static AVAILABLE: AtomicBool = ATOMIC_BOOL_INIT;
+        static CHECKER: Once = Once::new();
+        static AVAILABLE: AtomicBool = AtomicBool::new(false);
 
         CHECKER.call_once(|| {
             let mut buf: [u8; 0] = [];
@@ -182,10 +181,11 @@ mod imp {
 
 #[cfg(target_os = "ios")]
 mod imp {
-    use prelude::v1::*;
+    #[cfg(stage0)] use prelude::v1::*;
 
     use io;
     use mem;
+    use ptr;
     use rand::Rng;
     use libc::{c_int, size_t};
 
@@ -205,11 +205,10 @@ mod imp {
         _dummy: (),
     }
 
-    #[repr(C)]
-    struct SecRandom;
+    enum SecRandom {}
 
     #[allow(non_upper_case_globals)]
-    const kSecRandomDefault: *const SecRandom = 0 as *const SecRandom;
+    const kSecRandomDefault: *const SecRandom = ptr::null();
 
     #[link(name = "Security", kind = "framework")]
     extern "C" {
@@ -250,15 +249,10 @@ mod imp {
 
 #[cfg(windows)]
 mod imp {
-    use prelude::v1::*;
-
     use io;
     use mem;
     use rand::Rng;
-    use libc::types::os::arch::extra::{LONG_PTR};
-    use libc::{DWORD, BYTE, LPCSTR, BOOL};
-
-    type HCRYPTPROV = LONG_PTR;
+    use sys::c;
 
     /// A random number generator that retrieves randomness straight from
     /// the operating system. Platform sources:
@@ -271,24 +265,7 @@ mod imp {
     ///
     /// This does not block.
     pub struct OsRng {
-        hcryptprov: HCRYPTPROV
-    }
-
-    const PROV_RSA_FULL: DWORD = 1;
-    const CRYPT_SILENT: DWORD = 64;
-    const CRYPT_VERIFYCONTEXT: DWORD = 0xF0000000;
-
-    #[allow(non_snake_case)]
-    extern "system" {
-        fn CryptAcquireContextA(phProv: *mut HCRYPTPROV,
-                                pszContainer: LPCSTR,
-                                pszProvider: LPCSTR,
-                                dwProvType: DWORD,
-                                dwFlags: DWORD) -> BOOL;
-        fn CryptGenRandom(hProv: HCRYPTPROV,
-                          dwLen: DWORD,
-                          pbBuffer: *mut BYTE) -> BOOL;
-        fn CryptReleaseContext(hProv: HCRYPTPROV, dwFlags: DWORD) -> BOOL;
+        hcryptprov: c::HCRYPTPROV
     }
 
     impl OsRng {
@@ -296,9 +273,9 @@ mod imp {
         pub fn new() -> io::Result<OsRng> {
             let mut hcp = 0;
             let ret = unsafe {
-                CryptAcquireContextA(&mut hcp, 0 as LPCSTR, 0 as LPCSTR,
-                                     PROV_RSA_FULL,
-                                     CRYPT_VERIFYCONTEXT | CRYPT_SILENT)
+                c::CryptAcquireContextA(&mut hcp, 0 as c::LPCSTR, 0 as c::LPCSTR,
+                                        c::PROV_RSA_FULL,
+                                        c::CRYPT_VERIFYCONTEXT | c::CRYPT_SILENT)
             };
 
             if ret == 0 {
@@ -322,8 +299,8 @@ mod imp {
         }
         fn fill_bytes(&mut self, v: &mut [u8]) {
             let ret = unsafe {
-                CryptGenRandom(self.hcryptprov, v.len() as DWORD,
-                               v.as_mut_ptr())
+                c::CryptGenRandom(self.hcryptprov, v.len() as c::DWORD,
+                                  v.as_mut_ptr())
             };
             if ret == 0 {
                 panic!("couldn't generate random bytes: {}",
@@ -335,7 +312,7 @@ mod imp {
     impl Drop for OsRng {
         fn drop(&mut self) {
             let ret = unsafe {
-                CryptReleaseContext(self.hcryptprov, 0)
+                c::CryptReleaseContext(self.hcryptprov, 0)
             };
             if ret == 0 {
                 panic!("couldn't release context: {}",

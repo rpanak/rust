@@ -10,17 +10,18 @@
 
 #![deny(warnings)]
 
-#![feature(core)]
-#![feature(exit_status)]
-#![feature(rustdoc)]
-#![feature(rustc_private)]
+#![feature(iter_arith)]
 #![feature(path_relative_from)]
+#![feature(rustc_private)]
+#![feature(rustdoc)]
 
 extern crate rustdoc;
 extern crate rustc_back;
 
 use std::env;
 use std::error::Error;
+use std::process;
+use std::sync::atomic::{AtomicIsize, ATOMIC_ISIZE_INIT, Ordering};
 use subcommand::Subcommand;
 use term::Term;
 
@@ -34,10 +35,8 @@ mod build;
 mod serve;
 mod test;
 
-mod css;
-mod javascript;
+static EXIT_STATUS: AtomicIsize = ATOMIC_ISIZE_INIT;
 
-#[cfg(not(test))] // thanks #12327
 fn main() {
     let mut term = Term::new();
     let cmd: Vec<_> = env::args().collect();
@@ -70,4 +69,5 @@ fn main() {
             }
         }
     }
+    process::exit(EXIT_STATUS.load(Ordering::SeqCst) as i32);
 }

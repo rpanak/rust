@@ -17,7 +17,7 @@ use std::cell::Cell;
 use syntax::ast;
 use syntax::codemap::*;
 use syntax::parse::lexer;
-use syntax::parse::lexer::{Reader,StringReader};
+use syntax::parse::lexer::{Reader, StringReader};
 use syntax::parse::token;
 use syntax::parse::token::{keywords, Token};
 
@@ -28,7 +28,15 @@ pub struct SpanUtils<'a> {
 }
 
 impl<'a> SpanUtils<'a> {
+    pub fn new(sess: &'a Session) -> SpanUtils<'a> {
+        SpanUtils {
+            sess: sess,
+            err_count: Cell::new(0),
+        }
+    }
+
     // Standard string for extents/location.
+    #[rustfmt_skip]
     pub fn extent_str(&self, span: Span) -> String {
         let lo_loc = self.sess.codemap().lookup_char_pos(span.lo);
         let hi_loc = self.sess.codemap().lookup_char_pos(span.hi);
@@ -50,13 +58,14 @@ impl<'a> SpanUtils<'a> {
         let loc = self.sess.codemap().lookup_char_pos(span.lo);
         assert!(!generated_code(span),
                 "generated code; we should not be processing this `{}` in {}, line {}",
-                 self.snippet(span), loc.file.name, loc.line);
+                self.snippet(span),
+                loc.file.name,
+                loc.line);
 
         match sub_span {
             None => None,
             Some(sub) => {
-                let FileMapAndBytePos {fm, pos} =
-                    self.sess.codemap().lookup_byte_offset(span.lo);
+                let FileMapAndBytePos {fm, pos} = self.sess.codemap().lookup_byte_offset(span.lo);
                 let base = pos + fm.start_pos;
                 Some(Span {
                     lo: base + self.sess.codemap().lookup_byte_offset(sub.lo).pos,
@@ -83,8 +92,9 @@ impl<'a> SpanUtils<'a> {
         // the codemap as a new filemap. This is mostly OK, but means we should
         // not iterate over the codemap. Also, any spans over the new filemap
         // are incompatible with spans over other filemaps.
-        let filemap = self.sess.codemap().new_filemap(String::from_str("<anon-dxr>"),
-                                                      self.snippet(span));
+        let filemap = self.sess
+                          .codemap()
+                          .new_filemap(String::from("<anon-dxr>"), self.snippet(span));
         let s = self.sess;
         lexer::StringReader::new(s.diagnostic(), filemap)
     }
@@ -100,8 +110,7 @@ impl<'a> SpanUtils<'a> {
             if ts.tok == token::Eof {
                 return self.make_sub_span(span, result)
             }
-            if bracket_count == 0 &&
-               (ts.tok.is_ident() || ts.tok.is_keyword(keywords::SelfValue)) {
+            if bracket_count == 0 && (ts.tok.is_ident() || ts.tok.is_keyword(keywords::SelfValue)) {
                 result = Some(ts.sp);
             }
 
@@ -109,7 +118,7 @@ impl<'a> SpanUtils<'a> {
                 token::Lt => 1,
                 token::Gt => -1,
                 token::BinOp(token::Shr) => -2,
-                _ => 0
+                _ => 0,
             }
         }
     }
@@ -123,8 +132,7 @@ impl<'a> SpanUtils<'a> {
             if ts.tok == token::Eof {
                 return None;
             }
-            if bracket_count == 0 &&
-               (ts.tok.is_ident() || ts.tok.is_keyword(keywords::SelfValue)) {
+            if bracket_count == 0 && (ts.tok.is_ident() || ts.tok.is_keyword(keywords::SelfValue)) {
                 return self.make_sub_span(span, Some(ts.sp));
             }
 
@@ -132,7 +140,7 @@ impl<'a> SpanUtils<'a> {
                 token::Lt => 1,
                 token::Gt => -1,
                 token::BinOp(token::Shr) => -2,
-                _ => 0
+                _ => 0,
             }
         }
     }
@@ -149,20 +157,16 @@ impl<'a> SpanUtils<'a> {
             last_span = None;
             let mut next = toks.real_token();
 
-            if (next.tok == token::OpenDelim(token::Paren) ||
-                next.tok == token::Lt) &&
-               bracket_count == 0 &&
-               prev.tok.is_ident() {
+            if (next.tok == token::OpenDelim(token::Paren) || next.tok == token::Lt) &&
+               bracket_count == 0 && prev.tok.is_ident() {
                 result = Some(prev.sp);
             }
 
-            if bracket_count == 0 &&
-                next.tok == token::ModSep {
+            if bracket_count == 0 && next.tok == token::ModSep {
                 let old = prev;
                 prev = next;
                 next = toks.real_token();
-                if next.tok == token::Lt &&
-                   old.tok.is_ident() {
+                if next.tok == token::Lt && old.tok.is_ident() {
                     result = Some(old.sp);
                 }
             }
@@ -171,7 +175,7 @@ impl<'a> SpanUtils<'a> {
                 token::OpenDelim(token::Paren) | token::Lt => 1,
                 token::CloseDelim(token::Paren) | token::Gt => -1,
                 token::BinOp(token::Shr) => -2,
-                _ => 0
+                _ => 0,
             };
 
             if prev.tok.is_ident() && bracket_count == 0 {
@@ -195,9 +199,7 @@ impl<'a> SpanUtils<'a> {
         loop {
             let next = toks.real_token();
 
-            if (next.tok == token::Lt ||
-                next.tok == token::Colon) &&
-               bracket_count == 0 &&
+            if (next.tok == token::Lt || next.tok == token::Colon) && bracket_count == 0 &&
                prev.tok.is_ident() {
                 result = Some(prev.sp);
             }
@@ -207,7 +209,7 @@ impl<'a> SpanUtils<'a> {
                 token::Gt => -1,
                 token::BinOp(token::Shl) => 2,
                 token::BinOp(token::Shr) => -2,
-                _ => 0
+                _ => 0,
             };
 
             if next.tok == token::Eof {
@@ -218,8 +220,11 @@ impl<'a> SpanUtils<'a> {
         if bracket_count != 0 {
             let loc = self.sess.codemap().lookup_char_pos(span.lo);
             self.sess.span_bug(span,
-                &format!("Mis-counted brackets when breaking path? Parsing '{}' in {}, line {}",
-                        self.snippet(span), loc.file.name, loc.line));
+                               &format!("Mis-counted brackets when breaking path? Parsing '{}' \
+                                         in {}, line {}",
+                                        self.snippet(span),
+                                        loc.file.name,
+                                        loc.line));
         }
         if result.is_none() && prev.tok.is_ident() && bracket_count == 0 {
             return self.make_sub_span(span, Some(prev.sp));
@@ -244,9 +249,12 @@ impl<'a> SpanUtils<'a> {
             if ts.tok == token::Eof {
                 if bracket_count != 0 {
                     let loc = self.sess.codemap().lookup_char_pos(span.lo);
-                    self.sess.span_bug(span, &format!(
-                        "Mis-counted brackets when breaking path? Parsing '{}' in {}, line {}",
-                         self.snippet(span), loc.file.name, loc.line));
+                    self.sess.span_bug(span,
+                                       &format!("Mis-counted brackets when breaking path? \
+                                                 Parsing '{}' in {}, line {}",
+                                                self.snippet(span),
+                                                loc.file.name,
+                                                loc.line));
                 }
                 return result
             }
@@ -258,7 +266,7 @@ impl<'a> SpanUtils<'a> {
                 token::Gt => -1,
                 token::BinOp(token::Shl) => 2,
                 token::BinOp(token::Shr) => -2,
-                _ => 0
+                _ => 0,
             };
 
             // Ignore the `>::` in `<Type as Trait>::AssocTy`.
@@ -309,21 +317,15 @@ impl<'a> SpanUtils<'a> {
         }
     }
 
-    pub fn sub_span_after_keyword(&self,
-                                  span: Span,
-                                  keyword: keywords::Keyword) -> Option<Span> {
+    pub fn sub_span_after_keyword(&self, span: Span, keyword: keywords::Keyword) -> Option<Span> {
         self.sub_span_after(span, |t| t.is_keyword(keyword))
     }
 
-    pub fn sub_span_after_token(&self,
-                                span: Span,
-                                tok: Token) -> Option<Span> {
+    pub fn sub_span_after_token(&self, span: Span, tok: Token) -> Option<Span> {
         self.sub_span_after(span, |t| t == tok)
     }
 
-    fn sub_span_after<F: Fn(Token) -> bool>(&self,
-                                            span: Span,
-                                            f: F) -> Option<Span> {
+    fn sub_span_after<F: Fn(Token) -> bool>(&self, span: Span, f: F) -> Option<Span> {
         let mut toks = self.retokenise_span(span);
         loop {
             let ts = toks.real_token();
@@ -366,8 +368,11 @@ impl<'a> SpanUtils<'a> {
     pub fn report_span_err(&self, kind: &str, span: Span) {
         let loc = self.sess.codemap().lookup_char_pos(span.lo);
         info!("({}) Could not find sub_span in `{}` in {}, line {}",
-              kind, self.snippet(span), loc.file.name, loc.line);
-        self.err_count.set(self.err_count.get()+1);
+              kind,
+              self.snippet(span),
+              loc.file.name,
+              loc.line);
+        self.err_count.set(self.err_count.get() + 1);
         if self.err_count.get() > 1000 {
             self.sess.bug("span errors reached 1000, giving up");
         }

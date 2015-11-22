@@ -16,6 +16,7 @@
 //! and containing an error value.
 //!
 //! ```
+//! # #[allow(dead_code)]
 //! enum Result<T, E> {
 //!    Ok(T),
 //!    Err(E)
@@ -104,6 +105,7 @@
 //! something like this:
 //!
 //! ```no_run
+//! # #![allow(unused_must_use)] // \o/
 //! use std::fs::File;
 //! use std::io::prelude::*;
 //!
@@ -117,16 +119,15 @@
 //! warning (by default, controlled by the `unused_must_use` lint).
 //!
 //! You might instead, if you don't want to handle the error, simply
-//! panic, by converting to an `Option` with `ok`, then asserting
-//! success with `expect`. This will panic if the write fails, proving
-//! a marginally useful message indicating why:
+//! assert success with `expect`. This will panic if the
+//! write fails, providing a marginally useful message indicating why:
 //!
 //! ```{.no_run}
 //! use std::fs::File;
 //! use std::io::prelude::*;
 //!
 //! let mut file = File::create("valuable_data.txt").unwrap();
-//! file.write_all(b"important message").ok().expect("failed to write message");
+//! file.write_all(b"important message").expect("failed to write message");
 //! ```
 //!
 //! You might also simply assert success:
@@ -144,6 +145,7 @@
 //! # use std::fs::File;
 //! # use std::io::prelude::*;
 //! # use std::io;
+//! # #[allow(dead_code)]
 //! fn write_message() -> io::Result<()> {
 //!     let mut file = try!(File::create("valuable_data.txt"));
 //!     try!(file.write_all(b"important message"));
@@ -161,6 +163,7 @@
 //! It replaces this:
 //!
 //! ```
+//! # #![allow(dead_code)]
 //! use std::fs::File;
 //! use std::io::prelude::*;
 //! use std::io;
@@ -190,6 +193,7 @@
 //! With this:
 //!
 //! ```
+//! # #![allow(dead_code)]
 //! use std::fs::File;
 //! use std::io::prelude::*;
 //! use std::io;
@@ -223,7 +227,9 @@
 //! }
 //! ```
 //!
-//! `try!` is imported by the prelude, and is available everywhere.
+//! `try!` is imported by the prelude and is available everywhere, but it can only
+//! be used in functions that return `Result` because of the early return of
+//! `Err` that it provides.
 
 #![stable(feature = "rust1", since = "1.0.0")]
 
@@ -232,7 +238,7 @@ use self::Result::{Ok, Err};
 use clone::Clone;
 use fmt;
 use iter::{Iterator, DoubleEndedIterator, FromIterator, ExactSizeIterator, IntoIterator};
-use ops::{FnMut, FnOnce};
+use ops::FnOnce;
 use option::Option::{self, None, Some};
 use slice;
 
@@ -256,7 +262,6 @@ pub enum Result<T, E> {
 // Type implementation
 /////////////////////////////////////////////////////////////////////////////
 
-#[stable(feature = "rust1", since = "1.0.0")]
 impl<T, E> Result<T, E> {
     /////////////////////////////////////////////////////////////////////////
     // Querying the contained values
@@ -403,7 +408,10 @@ impl<T, E> Result<T, E> {
 
     /// Converts from `Result<T, E>` to `&[T]` (without copying)
     #[inline]
-    #[unstable(feature = "as_slice", since = "unsure of the utility here")]
+    #[unstable(feature = "as_slice", reason = "unsure of the utility here",
+               issue = "27776")]
+    #[deprecated(since = "1.4.0", reason = "niche API, unclear of usefulness")]
+    #[allow(deprecated)]
     pub fn as_slice(&self) -> &[T] {
         match *self {
             Ok(ref x) => slice::ref_slice(x),
@@ -418,7 +426,9 @@ impl<T, E> Result<T, E> {
     /// Converts from `Result<T, E>` to `&mut [T]` (without copying)
     ///
     /// ```
-    /// # #![feature(core)]
+    /// #![feature(as_slice)]
+    /// # #![allow(deprecated)]
+    ///
     /// let mut x: Result<&str, u32> = Ok("Gold");
     /// {
     ///     let v = x.as_mut_slice();
@@ -432,8 +442,11 @@ impl<T, E> Result<T, E> {
     /// assert!(x.as_mut_slice().is_empty());
     /// ```
     #[inline]
-    #[unstable(feature = "core",
-               reason = "waiting for mut conventions")]
+    #[unstable(feature = "as_slice",
+               reason = "waiting for mut conventions",
+               issue = "27776")]
+    #[deprecated(since = "1.4.0", reason = "niche API, unclear of usefulness")]
+    #[allow(deprecated)]
     pub fn as_mut_slice(&mut self) -> &mut [T] {
         match *self {
             Ok(ref mut x) => slice::mut_ref_slice(x),
@@ -449,7 +462,7 @@ impl<T, E> Result<T, E> {
     // Transforming contained values
     /////////////////////////////////////////////////////////////////////////
 
-    /// Maps a `Result<T, E>` to `Result<U, E>` by applying a function to an
+    /// Maps a `Result<T, E>` to `Result<U, E>` by applying a function to a
     /// contained `Ok` value, leaving an `Err` value untouched.
     ///
     /// This function can be used to compose the results of two functions.
@@ -477,7 +490,7 @@ impl<T, E> Result<T, E> {
         }
     }
 
-    /// Maps a `Result<T, E>` to `Result<T, F>` by applying a function to an
+    /// Maps a `Result<T, E>` to `Result<T, F>` by applying a function to a
     /// contained `Err` value, leaving an `Ok` value untouched.
     ///
     /// This function can be used to pass through a successful result while handling
@@ -531,7 +544,7 @@ impl<T, E> Result<T, E> {
     /// ```
     /// let mut x: Result<u32, &str> = Ok(7);
     /// match x.iter_mut().next() {
-    ///     Some(&mut ref mut x) => *x = 40,
+    ///     Some(v) => *v = 40,
     ///     None => {},
     /// }
     /// assert_eq!(x, Ok(40));
@@ -700,7 +713,6 @@ impl<T, E> Result<T, E> {
     }
 }
 
-#[stable(feature = "rust1", since = "1.0.0")]
 impl<T, E: fmt::Debug> Result<T, E> {
     /// Unwraps a result, yielding the content of an `Ok`.
     ///
@@ -729,9 +741,27 @@ impl<T, E: fmt::Debug> Result<T, E> {
                 panic!("called `Result::unwrap()` on an `Err` value: {:?}", e)
         }
     }
+
+    /// Unwraps a result, yielding the content of an `Ok`.
+    ///
+    /// Panics if the value is an `Err`, with a panic message including the
+    /// passed message, and the content of the `Err`.
+    ///
+    /// # Examples
+    /// ```{.should_panic}
+    /// let x: Result<u32, &str> = Err("emergency failure");
+    /// x.expect("Testing expect"); // panics with `Testing expect: emergency failure`
+    /// ```
+    #[inline]
+    #[stable(feature = "result_expect", since = "1.4.0")]
+    pub fn expect(self, msg: &str) -> T {
+        match self {
+            Ok(t) => t,
+            Err(e) => panic!("{}: {:?}", msg, e),
+        }
+    }
 }
 
-#[stable(feature = "rust1", since = "1.0.0")]
 impl<T: fmt::Debug, E> Result<T, E> {
     /// Unwraps a result, yielding the content of an `Err`.
     ///
@@ -790,6 +820,26 @@ impl<T, E> IntoIterator for Result<T, E> {
     }
 }
 
+#[stable(since = "1.4.0", feature = "result_iter")]
+impl<'a, T, E> IntoIterator for &'a Result<T, E> {
+    type Item = &'a T;
+    type IntoIter = Iter<'a, T>;
+
+    fn into_iter(self) -> Iter<'a, T> {
+        self.iter()
+    }
+}
+
+#[stable(since = "1.4.0", feature = "result_iter")]
+impl<'a, T, E> IntoIterator for &'a mut Result<T, E> {
+    type Item = &'a mut T;
+    type IntoIter = IterMut<'a, T>;
+
+    fn into_iter(mut self) -> IterMut<'a, T> {
+        self.iter_mut()
+    }
+}
+
 /////////////////////////////////////////////////////////////////////////////
 // The Result Iterators
 /////////////////////////////////////////////////////////////////////////////
@@ -820,6 +870,7 @@ impl<'a, T> DoubleEndedIterator for Iter<'a, T> {
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<'a, T> ExactSizeIterator for Iter<'a, T> {}
 
+#[stable(feature = "rust1", since = "1.0.0")]
 impl<'a, T> Clone for Iter<'a, T> {
     fn clone(&self) -> Iter<'a, T> { Iter { inner: self.inner } }
 }
@@ -933,32 +984,4 @@ impl<A, E, V: FromIterator<A>> FromIterator<Result<A, E>> for Result<V, E> {
             None => Ok(v),
         }
     }
-}
-
-/////////////////////////////////////////////////////////////////////////////
-// FromIterator
-/////////////////////////////////////////////////////////////////////////////
-
-/// Performs a fold operation over the result values from an iterator.
-///
-/// If an `Err` is encountered, it is immediately returned.
-/// Otherwise, the folded value is returned.
-#[inline]
-#[unstable(feature = "core")]
-pub fn fold<T,
-            V,
-            E,
-            F: FnMut(V, T) -> V,
-            Iter: Iterator<Item=Result<T, E>>>(
-            iterator: Iter,
-            mut init: V,
-            mut f: F)
-            -> Result<V, E> {
-    for t in iterator {
-        match t {
-            Ok(v) => init = f(init, v),
-            Err(u) => return Err(u)
-        }
-    }
-    Ok(init)
 }

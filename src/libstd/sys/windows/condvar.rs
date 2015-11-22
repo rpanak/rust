@@ -8,45 +8,38 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use prelude::v1::*;
-
 use cell::UnsafeCell;
-use libc::{self, DWORD};
-use sys::os;
+use sys::c;
 use sys::mutex::{self, Mutex};
-use sys::sync as ffi;
+use sys::os;
 use time::Duration;
 
-pub struct Condvar { inner: UnsafeCell<ffi::CONDITION_VARIABLE> }
+pub struct Condvar { inner: UnsafeCell<c::CONDITION_VARIABLE> }
 
 unsafe impl Send for Condvar {}
 unsafe impl Sync for Condvar {}
 
-pub const CONDVAR_INIT: Condvar = Condvar {
-    inner: UnsafeCell { value: ffi::CONDITION_VARIABLE_INIT }
-};
-
 impl Condvar {
-    #[inline]
-    pub unsafe fn new() -> Condvar { CONDVAR_INIT }
+    pub const fn new() -> Condvar {
+        Condvar { inner: UnsafeCell::new(c::CONDITION_VARIABLE_INIT) }
+    }
 
     #[inline]
     pub unsafe fn wait(&self, mutex: &Mutex) {
-        let r = ffi::SleepConditionVariableSRW(self.inner.get(),
-                                               mutex::raw(mutex),
-                                               libc::INFINITE,
-                                               0);
+        let r = c::SleepConditionVariableSRW(self.inner.get(),
+                                             mutex::raw(mutex),
+                                             c::INFINITE,
+                                             0);
         debug_assert!(r != 0);
     }
 
     pub unsafe fn wait_timeout(&self, mutex: &Mutex, dur: Duration) -> bool {
-        let r = ffi::SleepConditionVariableSRW(self.inner.get(),
-                                               mutex::raw(mutex),
-                                               super::dur2timeout(dur),
-                                               0);
+        let r = c::SleepConditionVariableSRW(self.inner.get(),
+                                             mutex::raw(mutex),
+                                             super::dur2timeout(dur),
+                                             0);
         if r == 0 {
-            const ERROR_TIMEOUT: DWORD = 0x5B4;
-            debug_assert_eq!(os::errno() as usize, ERROR_TIMEOUT as usize);
+            debug_assert_eq!(os::errno() as usize, c::ERROR_TIMEOUT as usize);
             false
         } else {
             true
@@ -55,12 +48,12 @@ impl Condvar {
 
     #[inline]
     pub unsafe fn notify_one(&self) {
-        ffi::WakeConditionVariable(self.inner.get())
+        c::WakeConditionVariable(self.inner.get())
     }
 
     #[inline]
     pub unsafe fn notify_all(&self) {
-        ffi::WakeAllConditionVariable(self.inner.get())
+        c::WakeAllConditionVariable(self.inner.get())
     }
 
     pub unsafe fn destroy(&self) {

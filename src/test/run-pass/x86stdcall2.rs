@@ -8,11 +8,9 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-// pretty-expanded FIXME #23616
-
 #![feature(std_misc)]
 
-pub type HANDLE = u32;
+pub type HANDLE = usize;
 pub type DWORD = u32;
 pub type SIZE_T = u32;
 pub type LPVOID = usize;

@@ -8,22 +8,19 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use self::BucketState::*;
+use alloc::heap::{allocate, deallocate, EMPTY};
 
-use clone::Clone;
 use cmp;
 use hash::{Hash, Hasher};
-use iter::{Iterator, ExactSizeIterator};
-use marker::{Copy, Send, Sync, Sized, self};
-use mem::{min_align_of, size_of};
+use marker;
+use mem::{align_of, size_of};
 use mem;
 use num::wrapping::OverflowingOps;
-use ops::{Deref, DerefMut, Drop};
-use option::Option;
-use option::Option::{Some, None};
+use ops::{Deref, DerefMut};
 use ptr::{self, Unique};
-use rt::heap::{allocate, deallocate, EMPTY};
 use collections::hash_state::HashState;
+
+use self::BucketState::*;
 
 const EMPTY_BUCKET: u64 = 0;
 
@@ -511,6 +508,7 @@ impl<K, V, M: Deref<Target=RawTable<K, V>>> GapThenFull<K, V, M> {
 /// # Panics
 ///
 /// Panics if `target_alignment` is not a power of two.
+#[inline]
 fn round_up_to_next(unrounded: usize, target_alignment: usize) -> usize {
     assert!(target_alignment.is_power_of_two());
     (unrounded + target_alignment - 1) & !(target_alignment - 1)
@@ -528,6 +526,7 @@ fn test_rounding() {
 
 // Returns a tuple of (key_offset, val_offset),
 // from the start of a mallocated array.
+#[inline]
 fn calculate_offsets(hashes_size: usize,
                      keys_size: usize, keys_align: usize,
                      vals_align: usize)
@@ -552,9 +551,9 @@ fn calculate_allocation(hash_size: usize, hash_align: usize,
                                                               vals_align);
     let (end_of_vals, oflo2) = vals_offset.overflowing_add(vals_size);
 
-    let min_align = cmp::max(hash_align, cmp::max(keys_align, vals_align));
+    let align = cmp::max(hash_align, cmp::max(keys_align, vals_align));
 
-    (min_align, hash_offset, end_of_vals, oflo || oflo2)
+    (align, hash_offset, end_of_vals, oflo || oflo2)
 }
 
 #[test]
@@ -596,9 +595,9 @@ impl<K, V> RawTable<K, V> {
         // factored out into a different function.
         let (malloc_alignment, hash_offset, size, oflo) =
             calculate_allocation(
-                hashes_size, min_align_of::<u64>(),
-                keys_size,   min_align_of::< K >(),
-                vals_size,   min_align_of::< V >());
+                hashes_size, align_of::<u64>(),
+                keys_size,   align_of::< K >(),
+                vals_size,   align_of::< V >());
 
         assert!(!oflo, "capacity overflow");
 
@@ -629,8 +628,8 @@ impl<K, V> RawTable<K, V> {
         let buffer = *self.hashes as *mut u8;
         let (keys_offset, vals_offset, oflo) =
             calculate_offsets(hashes_size,
-                              keys_size, min_align_of::<K>(),
-                              min_align_of::<V>());
+                              keys_size, align_of::<K>(),
+                              align_of::<V>());
         debug_assert!(!oflo, "capacity overflow");
         unsafe {
             RawBucket {
@@ -817,6 +816,9 @@ pub struct Iter<'a, K: 'a, V: 'a> {
     elems_left: usize,
 }
 
+unsafe impl<'a, K: Sync, V: Sync> Sync for Iter<'a, K, V> {}
+unsafe impl<'a, K: Sync, V: Sync> Send for Iter<'a, K, V> {}
+
 // FIXME(#19839) Remove in favor of `#[derive(Clone)]`
 impl<'a, K, V> Clone for Iter<'a, K, V> {
     fn clone(&self) -> Iter<'a, K, V> {
@@ -834,17 +836,28 @@ pub struct IterMut<'a, K: 'a, V: 'a> {
     elems_left: usize,
 }
 
+unsafe impl<'a, K: Sync, V: Sync> Sync for IterMut<'a, K, V> {}
+// Both K: Sync and K: Send are correct for IterMut's Send impl,
+// but Send is the more useful bound
+unsafe impl<'a, K: Send, V: Send> Send for IterMut<'a, K, V> {}
+
 /// Iterator over the entries in a table, consuming the table.
 pub struct IntoIter<K, V> {
     table: RawTable<K, V>,
     iter: RawBuckets<'static, K, V>
 }
 
+unsafe impl<K: Sync, V: Sync> Sync for IntoIter<K, V> {}
+unsafe impl<K: Send, V: Send> Send for IntoIter<K, V> {}
+
 /// Iterator over the entries in a table, clearing the table.
 pub struct Drain<'a, K: 'a, V: 'a> {
     table: &'a mut RawTable<K, V>,
     iter: RawBuckets<'static, K, V>,
 }
+
+unsafe impl<'a, K: Sync, V: Sync> Sync for Drain<'a, K, V> {}
+unsafe impl<'a, K: Send, V: Send> Send for Drain<'a, K, V> {}
 
 impl<'a, K, V> Iterator for Iter<'a, K, V> {
     type Item = (&'a K, &'a V);
@@ -945,7 +958,7 @@ impl<'a, K, V> ExactSizeIterator for Drain<'a, K, V> {
 
 impl<'a, K: 'a, V: 'a> Drop for Drain<'a, K, V> {
     fn drop(&mut self) {
-        for _ in self.by_ref() {}
+        for _ in self {}
     }
 }
 
@@ -986,6 +999,7 @@ impl<K: Clone, V: Clone> Clone for RawTable<K, V> {
 }
 
 impl<K, V> Drop for RawTable<K, V> {
+    #[unsafe_destructor_blind_to_params]
     fn drop(&mut self) {
         if self.capacity == 0 || self.capacity == mem::POST_DROP_USIZE {
             return;
@@ -1004,9 +1018,9 @@ impl<K, V> Drop for RawTable<K, V> {
         let keys_size = self.capacity * size_of::<K>();
         let vals_size = self.capacity * size_of::<V>();
         let (align, _, size, oflo) =
-            calculate_allocation(hashes_size, min_align_of::<u64>(),
-                                 keys_size, min_align_of::<K>(),
-                                 vals_size, min_align_of::<V>());
+            calculate_allocation(hashes_size, align_of::<u64>(),
+                                 keys_size, align_of::<K>(),
+                                 vals_size, align_of::<V>());
 
         debug_assert!(!oflo, "should be impossible");
 

@@ -9,7 +9,6 @@
 // except according to those terms.
 
 use core::option::*;
-use core::marker;
 use core::mem;
 use core::clone::Clone;
 
@@ -72,7 +71,7 @@ fn test_option_dance() {
     let x = Some(());
     let mut y = Some(5);
     let mut y2 = 0;
-    for _x in x.iter() {
+    for _x in x {
         y2 = y.take().unwrap();
     }
     assert_eq!(y2, 5);
@@ -81,7 +80,8 @@ fn test_option_dance() {
 
 #[test] #[should_panic]
 fn test_option_too_much_dance() {
-    let mut y = Some(marker::NoCopy);
+    struct A;
+    let mut y = Some(A);
     let _y2 = y.take().unwrap();
     let _y3 = y.take().unwrap();
 }
@@ -180,11 +180,14 @@ fn test_iter() {
     assert_eq!(it.next(), Some(&val));
     assert_eq!(it.size_hint(), (0, Some(0)));
     assert!(it.next().is_none());
+
+    let mut it = (&x).into_iter();
+    assert_eq!(it.next(), Some(&val));
 }
 
 #[test]
 fn test_mut_iter() {
-    let val = 5;
+    let mut val = 5;
     let new_val = 11;
 
     let mut x = Some(val);
@@ -205,6 +208,10 @@ fn test_mut_iter() {
         assert!(it.next().is_none());
     }
     assert_eq!(x, Some(new_val));
+
+    let mut y = Some(val);
+    let mut it = (&mut y).into_iter();
+    assert_eq!(it.next(), Some(&mut val));
 }
 
 #[test]

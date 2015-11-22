@@ -55,47 +55,47 @@ fn test_to_digit() {
 
 #[test]
 fn test_to_lowercase() {
-    fn lower(c: char) -> char {
-        let mut it = c.to_lowercase();
-        let c = it.next().unwrap();
-        assert!(it.next().is_none());
-        c
+    fn lower(c: char) -> Vec<char> {
+        c.to_lowercase().collect()
     }
-    assert_eq!(lower('A'), 'a');
-    assert_eq!(lower('Ö'), 'ö');
-    assert_eq!(lower('ß'), 'ß');
-    assert_eq!(lower('Ü'), 'ü');
-    assert_eq!(lower('💩'), '💩');
-    assert_eq!(lower('Σ'), 'σ');
-    assert_eq!(lower('Τ'), 'τ');
-    assert_eq!(lower('Ι'), 'ι');
-    assert_eq!(lower('Γ'), 'γ');
-    assert_eq!(lower('Μ'), 'μ');
-    assert_eq!(lower('Α'), 'α');
-    assert_eq!(lower('Σ'), 'σ');
+    assert_eq!(lower('A'), ['a']);
+    assert_eq!(lower('Ö'), ['ö']);
+    assert_eq!(lower('ß'), ['ß']);
+    assert_eq!(lower('Ü'), ['ü']);
+    assert_eq!(lower('💩'), ['💩']);
+    assert_eq!(lower('Σ'), ['σ']);
+    assert_eq!(lower('Τ'), ['τ']);
+    assert_eq!(lower('Ι'), ['ι']);
+    assert_eq!(lower('Γ'), ['γ']);
+    assert_eq!(lower('Μ'), ['μ']);
+    assert_eq!(lower('Α'), ['α']);
+    assert_eq!(lower('Σ'), ['σ']);
+    assert_eq!(lower('ǅ'), ['ǆ']);
+    assert_eq!(lower('ﬁ'), ['ﬁ']);
+    assert_eq!(lower('İ'), ['i', '\u{307}']);
 }
 
 #[test]
 fn test_to_uppercase() {
-    fn upper(c: char) -> char {
-        let mut it = c.to_uppercase();
-        let c = it.next().unwrap();
-        assert!(it.next().is_none());
-        c
+    fn upper(c: char) -> Vec<char> {
+        c.to_uppercase().collect()
     }
-    assert_eq!(upper('a'), 'A');
-    assert_eq!(upper('ö'), 'Ö');
-    assert_eq!(upper('ß'), 'ß'); // not ẞ: Latin capital letter sharp s
-    assert_eq!(upper('ü'), 'Ü');
-    assert_eq!(upper('💩'), '💩');
+    assert_eq!(upper('a'), ['A']);
+    assert_eq!(upper('ö'), ['Ö']);
+    assert_eq!(upper('ß'), ['S', 'S']); // not ẞ: Latin capital letter sharp s
+    assert_eq!(upper('ü'), ['Ü']);
+    assert_eq!(upper('💩'), ['💩']);
 
-    assert_eq!(upper('σ'), 'Σ');
-    assert_eq!(upper('τ'), 'Τ');
-    assert_eq!(upper('ι'), 'Ι');
-    assert_eq!(upper('γ'), 'Γ');
-    assert_eq!(upper('μ'), 'Μ');
-    assert_eq!(upper('α'), 'Α');
-    assert_eq!(upper('ς'), 'Σ');
+    assert_eq!(upper('σ'), ['Σ']);
+    assert_eq!(upper('τ'), ['Τ']);
+    assert_eq!(upper('ι'), ['Ι']);
+    assert_eq!(upper('γ'), ['Γ']);
+    assert_eq!(upper('μ'), ['Μ']);
+    assert_eq!(upper('α'), ['Α']);
+    assert_eq!(upper('ς'), ['Σ']);
+    assert_eq!(upper('ǅ'), ['Ǆ']);
+    assert_eq!(upper('ﬁ'), ['F', 'I']);
+    assert_eq!(upper('ᾀ'), ['Ἀ', 'Ι']);
 }
 
 #[test]
@@ -208,30 +208,11 @@ fn test_len_utf16() {
     assert!('\u{1f4a9}'.len_utf16() == 2);
 }
 
-#[allow(deprecated)]
 #[test]
-fn test_width() {
-    assert_eq!('\x00'.width(false),Some(0));
-    assert_eq!('\x00'.width(true),Some(0));
-
-    assert_eq!('\x0A'.width(false),None);
-    assert_eq!('\x0A'.width(true),None);
-
-    assert_eq!('w'.width(false),Some(1));
-    assert_eq!('w'.width(true),Some(1));
-
-    assert_eq!('ｈ'.width(false),Some(2));
-    assert_eq!('ｈ'.width(true),Some(2));
-
-    assert_eq!('\u{AD}'.width(false),Some(1));
-    assert_eq!('\u{AD}'.width(true),Some(1));
-
-    assert_eq!('\u{1160}'.width(false),Some(0));
-    assert_eq!('\u{1160}'.width(true),Some(0));
-
-    assert_eq!('\u{a1}'.width(false),Some(1));
-    assert_eq!('\u{a1}'.width(true),Some(2));
-
-    assert_eq!('\u{300}'.width(false),Some(0));
-    assert_eq!('\u{300}'.width(true),Some(0));
+fn test_decode_utf16() {
+    fn check(s: &[u16], expected: &[Result<char, u16>]) {
+        assert_eq!(::std::char::decode_utf16(s.iter().cloned()).collect::<Vec<_>>(), expected);
+    }
+    check(&[0xD800, 0x41, 0x42], &[Err(0xD800), Ok('A'), Ok('B')]);
+    check(&[0xD800, 0], &[Err(0xD800), Ok('\0')]);
 }

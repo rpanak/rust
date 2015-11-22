@@ -14,23 +14,8 @@
 
 use prelude::v1::*;
 
-use ops::Range;
 use mem;
-
-/// Extension methods for ASCII-subset only operations on owned strings
-#[unstable(feature = "std_misc",
-           reason = "would prefer to do this in a more general way")]
-pub trait OwnedAsciiExt {
-    /// Converts the string to ASCII upper case:
-    /// ASCII letters 'a' to 'z' are mapped to 'A' to 'Z',
-    /// but non-ASCII letters are unchanged.
-    fn into_ascii_uppercase(self) -> Self;
-
-    /// Converts the string to ASCII lower case:
-    /// ASCII letters 'A' to 'Z' are mapped to 'a' to 'z',
-    /// but non-ASCII letters are unchanged.
-    fn into_ascii_lowercase(self) -> Self;
-}
+use ops::Range;
 
 /// Extension methods for ASCII-subset only operations on string slices.
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -122,7 +107,8 @@ pub trait AsciiExt {
     /// # Examples
     ///
     /// ```
-    /// # #![feature(ascii)]
+    /// #![feature(ascii)]
+    ///
     /// use std::ascii::AsciiExt;
     ///
     /// let mut ascii = 'a';
@@ -131,7 +117,7 @@ pub trait AsciiExt {
     ///
     /// assert_eq!('A', ascii);
     /// ```
-    #[unstable(feature = "ascii")]
+    #[unstable(feature = "ascii", issue = "27809")]
     fn make_ascii_uppercase(&mut self);
 
     /// Converts this type to its ASCII lower case equivalent in-place.
@@ -141,7 +127,8 @@ pub trait AsciiExt {
     /// # Examples
     ///
     /// ```
-    /// # #![feature(ascii)]
+    /// #![feature(ascii)]
+    ///
     /// use std::ascii::AsciiExt;
     ///
     /// let mut ascii = 'A';
@@ -150,7 +137,7 @@ pub trait AsciiExt {
     ///
     /// assert_eq!('a', ascii);
     /// ```
-    #[unstable(feature = "ascii")]
+    #[unstable(feature = "ascii", issue = "27809")]
     fn make_ascii_lowercase(&mut self);
 }
 
@@ -165,12 +152,18 @@ impl AsciiExt for str {
 
     #[inline]
     fn to_ascii_uppercase(&self) -> String {
-        self.to_string().into_ascii_uppercase()
+        let mut bytes = self.as_bytes().to_vec();
+        bytes.make_ascii_uppercase();
+        // make_ascii_uppercase() preserves the UTF-8 invariant.
+        unsafe { String::from_utf8_unchecked(bytes) }
     }
 
     #[inline]
     fn to_ascii_lowercase(&self) -> String {
-        self.to_string().into_ascii_lowercase()
+        let mut bytes = self.as_bytes().to_vec();
+        bytes.make_ascii_lowercase();
+        // make_ascii_uppercase() preserves the UTF-8 invariant.
+        unsafe { String::from_utf8_unchecked(bytes) }
     }
 
     #[inline]
@@ -189,22 +182,6 @@ impl AsciiExt for str {
     }
 }
 
-#[unstable(feature = "std_misc",
-           reason = "would prefer to do this in a more general way")]
-impl OwnedAsciiExt for String {
-    #[inline]
-    fn into_ascii_uppercase(self) -> String {
-        // Vec<u8>::into_ascii_uppercase() preserves the UTF-8 invariant.
-        unsafe { String::from_utf8_unchecked(self.into_bytes().into_ascii_uppercase()) }
-    }
-
-    #[inline]
-    fn into_ascii_lowercase(self) -> String {
-        // Vec<u8>::into_ascii_lowercase() preserves the UTF-8 invariant.
-        unsafe { String::from_utf8_unchecked(self.into_bytes().into_ascii_lowercase()) }
-    }
-}
-
 #[stable(feature = "rust1", since = "1.0.0")]
 impl AsciiExt for [u8] {
     type Owned = Vec<u8>;
@@ -215,18 +192,22 @@ impl AsciiExt for [u8] {
 
     #[inline]
     fn to_ascii_uppercase(&self) -> Vec<u8> {
-        self.to_vec().into_ascii_uppercase()
+        let mut me = self.to_vec();
+        me.make_ascii_uppercase();
+        return me
     }
 
     #[inline]
     fn to_ascii_lowercase(&self) -> Vec<u8> {
-        self.to_vec().into_ascii_lowercase()
+        let mut me = self.to_vec();
+        me.make_ascii_lowercase();
+        return me
     }
 
     #[inline]
     fn eq_ignore_ascii_case(&self, other: &[u8]) -> bool {
         self.len() == other.len() &&
-        self.iter().zip(other.iter()).all(|(a, b)| {
+        self.iter().zip(other).all(|(a, b)| {
             a.eq_ignore_ascii_case(b)
         })
     }
@@ -241,22 +222,6 @@ impl AsciiExt for [u8] {
         for byte in self {
             byte.make_ascii_lowercase();
         }
-    }
-}
-
-#[unstable(feature = "std_misc",
-           reason = "would prefer to do this in a more general way")]
-impl OwnedAsciiExt for Vec<u8> {
-    #[inline]
-    fn into_ascii_uppercase(mut self) -> Vec<u8> {
-        self.make_ascii_uppercase();
-        self
-    }
-
-    #[inline]
-    fn into_ascii_lowercase(mut self) -> Vec<u8> {
-        self.make_ascii_lowercase();
-        self
     }
 }
 
@@ -473,16 +438,19 @@ mod tests {
     use char::from_u32;
 
     #[test]
-    fn test_ascii() {
-        assert!("banana".chars().all(|c| c.is_ascii()));
-        assert!(!"ประเทศไทย中华Việt Nam".chars().all(|c| c.is_ascii()));
-    }
+    fn test_is_ascii() {
+        assert!(b"".is_ascii());
+        assert!(b"banana\0\x7F".is_ascii());
+        assert!(b"banana\0\x7F".iter().all(|b| b.is_ascii()));
+        assert!(!b"Vi\xe1\xbb\x87t Nam".is_ascii());
+        assert!(!b"Vi\xe1\xbb\x87t Nam".iter().all(|b| b.is_ascii()));
+        assert!(!b"\xe1\xbb\x87".iter().any(|b| b.is_ascii()));
 
-    #[test]
-    fn test_ascii_vec() {
         assert!("".is_ascii());
-        assert!("a".is_ascii());
-        assert!(!"\u{2009}".is_ascii());
+        assert!("banana\0\u{7F}".is_ascii());
+        assert!("banana\0\u{7F}".chars().all(|c| c.is_ascii()));
+        assert!(!"ประเทศไทย中华Việt Nam".chars().all(|c| c.is_ascii()));
+        assert!(!"ประเทศไทย中华ệ ".chars().any(|c| c.is_ascii()));
     }
 
     #[test]
@@ -513,32 +481,52 @@ mod tests {
     }
 
     #[test]
-    fn test_into_ascii_uppercase() {
-        assert_eq!(("url()URL()uRl()ürl".to_string()).into_ascii_uppercase(),
-                   "URL()URL()URL()üRL".to_string());
-        assert_eq!(("hıKß".to_string()).into_ascii_uppercase(), "HıKß");
-
-        for i in 0..501 {
-            let upper = if 'a' as u32 <= i && i <= 'z' as u32 { i + 'A' as u32 - 'a' as u32 }
-                        else { i };
-            assert_eq!((from_u32(i).unwrap()).to_string().into_ascii_uppercase(),
-                       (from_u32(upper).unwrap()).to_string());
+    fn test_make_ascii_lower_case() {
+        macro_rules! test {
+            ($from: expr, $to: expr) => {
+                {
+                    let mut x = $from;
+                    x.make_ascii_lowercase();
+                    assert_eq!(x, $to);
+                }
+            }
         }
+        test!(b'A', b'a');
+        test!(b'a', b'a');
+        test!(b'!', b'!');
+        test!('A', 'a');
+        test!('À', 'À');
+        test!('a', 'a');
+        test!('!', '!');
+        test!(b"H\xc3\x89".to_vec(), b"h\xc3\x89");
+        test!("HİKß".to_string(), "hİKß");
     }
 
-    #[test]
-    fn test_into_ascii_lowercase() {
-        assert_eq!(("url()URL()uRl()Ürl".to_string()).into_ascii_lowercase(),
-                   "url()url()url()Ürl");
-        // Dotted capital I, Kelvin sign, Sharp S.
-        assert_eq!(("HİKß".to_string()).into_ascii_lowercase(), "hİKß");
 
-        for i in 0..501 {
-            let lower = if 'A' as u32 <= i && i <= 'Z' as u32 { i + 'a' as u32 - 'A' as u32 }
-                        else { i };
-            assert_eq!((from_u32(i).unwrap()).to_string().into_ascii_lowercase(),
-                       (from_u32(lower).unwrap()).to_string());
+    #[test]
+    fn test_make_ascii_upper_case() {
+        macro_rules! test {
+            ($from: expr, $to: expr) => {
+                {
+                    let mut x = $from;
+                    x.make_ascii_uppercase();
+                    assert_eq!(x, $to);
+                }
+            }
         }
+        test!(b'a', b'A');
+        test!(b'A', b'A');
+        test!(b'!', b'!');
+        test!('a', 'A');
+        test!('à', 'à');
+        test!('A', 'A');
+        test!('!', '!');
+        test!(b"h\xc3\xa9".to_vec(), b"H\xc3\xa9");
+        test!("hıKß".to_string(), "HıKß");
+
+        let mut x = "Hello".to_string();
+        x[..3].make_ascii_uppercase();  // Test IndexMut on String.
+        assert_eq!(x, "HELlo")
     }
 
     #[test]

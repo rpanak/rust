@@ -8,7 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#![feature(box_syntax, duration, duration_span, collections)]
+#![feature(box_syntax, duration, duration_span, vec_push_all)]
 
 use std::env;
 use std::thread;
@@ -36,7 +36,7 @@ fn run(repeat: isize, depth: isize) {
                 recurse_or_panic(depth, None)
             }).join();
         });
-        println!("iter: {}", dur);
+        println!("iter: {:?}", dur);
     }
 }
 

@@ -34,12 +34,16 @@ fn any_move() {
     let b = Box::new(Test) as Box<Any>;
 
     match a.downcast::<i32>() {
-        Ok(a) => { assert!(a == Box::new(8)); }
-        Err(..) => panic!()
+        Ok(a) => {
+            assert!(a == Box::new(8));
+        }
+        Err(..) => panic!(),
     }
     match b.downcast::<Test>() {
-        Ok(a) => { assert!(a == Box::new(Test)); }
-        Err(..) => panic!()
+        Ok(a) => {
+            assert!(a == Box::new(Test));
+        }
+        Err(..) => panic!(),
     }
 
     let a = Box::new(8) as Box<Any>;
@@ -70,15 +74,16 @@ fn test_show() {
 
 #[test]
 fn deref() {
-    fn homura<T: Deref<Target=i32>>(_: T) { }
+    fn homura<T: Deref<Target = i32>>(_: T) {
+    }
     homura(Box::new(765));
 }
 
 #[test]
 fn raw_sized() {
+    let x = Box::new(17);
+    let p = Box::into_raw(x);
     unsafe {
-        let x = Box::new(17);
-        let p = boxed::into_raw(x);
         assert_eq!(17, *p);
         *p = 19;
         let y = Box::from_raw(p);
@@ -105,9 +110,9 @@ fn raw_trait() {
         }
     }
 
+    let x: Box<Foo> = Box::new(Bar(17));
+    let p = Box::into_raw(x);
     unsafe {
-        let x: Box<Foo> = Box::new(Bar(17));
-        let p = boxed::into_raw(x);
         assert_eq!(17, (*p).get());
         (*p).set(19);
         let y: Box<Foo> = Box::from_raw(p);

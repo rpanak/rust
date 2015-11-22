@@ -6,12 +6,12 @@
 # met:
 
 #     (1) Redistributions of source code must retain the above copyright
-#     notice, this list of conditions and the following disclaimer. 
+#     notice, this list of conditions and the following disclaimer.
 
 #     (2) Redistributions in binary form must reproduce the above copyright
 #     notice, this list of conditions and the following disclaimer in
 #     the documentation and/or other materials provided with the
-#     distribution.  
+#     distribution.
 
 #     (3) The name of the author may not be used to
 #     endorse or promote products derived from this software without
@@ -56,6 +56,7 @@ BACKTRACE_FILES = \
 
 FORMAT_FILES = \
 	elf.c \
+	pecoff.c \
 	unknown.c
 
 VIEW_FILES = \
@@ -124,6 +125,7 @@ fileline.lo: config.h backtrace.h internal.h
 mmap.lo: config.h backtrace.h internal.h
 mmapio.lo: config.h backtrace.h internal.h
 nounwind.lo: config.h internal.h
+pecoff.lo: config.h backtrace.h internal.h
 posix.lo: config.h backtrace.h internal.h
 print.lo: config.h backtrace.h internal.h
 read.lo: config.h backtrace.h internal.h

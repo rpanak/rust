@@ -9,7 +9,6 @@
 // except according to those terms.
 
 use std::collections::LinkedList;
-use std::hash::{SipHasher, self};
 
 use test;
 
@@ -257,7 +256,7 @@ fn test_hash() {
   let mut x = LinkedList::new();
   let mut y = LinkedList::new();
 
-  assert!(hash::hash::<_, SipHasher>(&x) == hash::hash::<_, SipHasher>(&y));
+  assert!(::hash(&x) == ::hash(&y));
 
   x.push_back(1);
   x.push_back(2);
@@ -267,7 +266,7 @@ fn test_hash() {
   y.push_front(2);
   y.push_front(1);
 
-  assert!(hash::hash::<_, SipHasher>(&x) == hash::hash::<_, SipHasher>(&y));
+  assert!(::hash(&x) == ::hash(&y));
 }
 
 #[test]
@@ -319,6 +318,25 @@ fn test_show() {
 
     let list: LinkedList<_> = vec!["just", "one", "test", "more"].iter().cloned().collect();
     assert_eq!(format!("{:?}", list), "[\"just\", \"one\", \"test\", \"more\"]");
+}
+
+#[test]
+fn test_extend_ref() {
+    let mut a = LinkedList::new();
+    a.push_back(1);
+
+    a.extend(&[2, 3, 4]);
+
+    assert_eq!(a.len(), 4);
+    assert_eq!(a, list_from(&[1, 2, 3, 4]));
+
+    let mut b = LinkedList::new();
+    b.push_back(5);
+    b.push_back(6);
+    a.extend(&b);
+
+    assert_eq!(a.len(), 6);
+    assert_eq!(a, list_from(&[1, 2, 3, 4, 5, 6]));
 }
 
 #[bench]

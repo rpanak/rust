@@ -19,9 +19,10 @@ use codemap::Span;
 use ext::base;
 use ext::base::*;
 use feature_gate;
-use parse::token::InternedString;
+use parse::token::{intern, InternedString};
 use parse::token;
 use ptr::P;
+use syntax::ast::AsmDialect;
 
 enum State {
     Asm,
@@ -51,7 +52,9 @@ pub fn expand_asm<'cx>(cx: &'cx mut ExtCtxt, sp: Span, tts: &[ast::TokenTree])
                        -> Box<base::MacResult+'cx> {
     if !cx.ecfg.enable_asm() {
         feature_gate::emit_feature_err(
-            &cx.parse_sess.span_diagnostic, "asm", sp, feature_gate::EXPLAIN_ASM);
+            &cx.parse_sess.span_diagnostic, "asm", sp,
+            feature_gate::GateIssue::Language,
+            feature_gate::EXPLAIN_ASM);
         return DummyResult::expr(sp);
     }
 
@@ -63,7 +66,7 @@ pub fn expand_asm<'cx>(cx: &'cx mut ExtCtxt, sp: Span, tts: &[ast::TokenTree])
     let mut clobs = Vec::new();
     let mut volatile = false;
     let mut alignstack = false;
-    let mut dialect = ast::AsmAtt;
+    let mut dialect = AsmDialect::Att;
 
     let mut state = Asm;
 
@@ -76,7 +79,7 @@ pub fn expand_asm<'cx>(cx: &'cx mut ExtCtxt, sp: Span, tts: &[ast::TokenTree])
                     cx.span_err(sp, "malformed inline assembly");
                     return DummyResult::expr(sp);
                 }
-                let (s, style) = match expr_to_string(cx, p.parse_expr(),
+                let (s, style) = match expr_to_string(cx, panictry!(p.parse_expr()),
                                                    "inline assembly must be a string literal") {
                     Some((s, st)) => (s, st),
                     // let compilation continue
@@ -99,7 +102,7 @@ pub fn expand_asm<'cx>(cx: &'cx mut ExtCtxt, sp: Span, tts: &[ast::TokenTree])
                     let span = p.last_span;
 
                     panictry!(p.expect(&token::OpenDelim(token::Paren)));
-                    let out = p.parse_expr();
+                    let out = panictry!(p.parse_expr());
                     panictry!(p.expect(&token::CloseDelim(token::Paren)));
 
                     // Expands a read+write operand into two operands.
@@ -136,14 +139,14 @@ pub fn expand_asm<'cx>(cx: &'cx mut ExtCtxt, sp: Span, tts: &[ast::TokenTree])
 
                     let (constraint, _str_style) = panictry!(p.parse_str());
 
-                    if constraint.starts_with("=") {
+                    if constraint.starts_with("=") && !constraint.contains("*") {
                         cx.span_err(p.last_span, "input operand constraint contains '='");
-                    } else if constraint.starts_with("+") {
+                    } else if constraint.starts_with("+") && !constraint.contains("*") {
                         cx.span_err(p.last_span, "input operand constraint contains '+'");
                     }
 
                     panictry!(p.expect(&token::OpenDelim(token::Paren)));
-                    let input = p.parse_expr();
+                    let input = panictry!(p.parse_expr());
                     panictry!(p.expect(&token::CloseDelim(token::Paren)));
 
                     inputs.push((constraint, input));
@@ -176,7 +179,7 @@ pub fn expand_asm<'cx>(cx: &'cx mut ExtCtxt, sp: Span, tts: &[ast::TokenTree])
                 } else if option == "alignstack" {
                     alignstack = true;
                 } else if option == "intel" {
-                    dialect = ast::AsmIntel;
+                    dialect = AsmDialect::Intel;
                 } else {
                     cx.span_warn(p.last_span, "unrecognized option");
                 }
@@ -211,8 +214,7 @@ pub fn expand_asm<'cx>(cx: &'cx mut ExtCtxt, sp: Span, tts: &[ast::TokenTree])
     let expn_id = cx.codemap().record_expansion(codemap::ExpnInfo {
         call_site: sp,
         callee: codemap::NameAndSpan {
-            name: "asm".to_string(),
-            format: codemap::MacroBang,
+            format: codemap::MacroBang(intern("asm")),
             span: None,
             allow_internal_unstable: false,
         },

@@ -1,5 +1,3 @@
-#![feature(no_std)]
-#![no_std]
 #[prelude_import]
 use std::prelude::v1::*;
 #[macro_use]
@@ -15,7 +13,7 @@ extern crate std as std;
 // except according to those terms.
 
 // pretty-compare-only
-// pretty-mode:typed
+// pretty-mode:hir,typed
 // pp-exact:issue-4264.pp
 
 // #4264 fixed-length vector types
@@ -29,10 +27,9 @@ pub fn bar() {
     let _: [(); (1 as usize)] = ([(() as ())] as [(); 1]);
 
     let _ =
-        (((&((([(1 as i32), (2 as i32), (3 as i32)] as [i32; 3])) as [i32; 3])
-              as &[i32; 3]) as *const _ as *const [i32; 3]) as
-            *const [i32; (3 as usize)] as *const [i32; 3]);
-
+        (((&([(1 as i32), (2 as i32), (3 as i32)] as [i32; 3]) as &[i32; 3])
+             as *const _ as *const [i32; 3]) as *const [i32; (3 as usize)] as
+            *const [i32; 3]);
 
 
 

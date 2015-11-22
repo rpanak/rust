@@ -11,8 +11,10 @@
 //! This pretty-printer is a direct reimplementation of Philip Karlton's
 //! Mesa pretty-printer, as described in appendix A of
 //!
-//!     STAN-CS-79-770: "Pretty Printing", by Derek C. Oppen.
-//!     Stanford Department of Computer Science, 1979.
+//! ````ignore
+//! STAN-CS-79-770: "Pretty Printing", by Derek C. Oppen.
+//! Stanford Department of Computer Science, 1979.
+//! ````
 //!
 //! The algorithm's aim is to break a stream into as few lines as possible
 //! while respecting the indentation-consistency requirements of the enclosing
@@ -61,7 +63,6 @@
 
 use std::io;
 use std::string;
-use std::iter::repeat;
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Breaks {
@@ -166,9 +167,9 @@ pub fn mk_printer<'a>(out: Box<io::Write+'a>, linewidth: usize) -> Printer<'a> {
     // fall behind.
     let n: usize = 3 * linewidth;
     debug!("mk_printer {}", linewidth);
-    let token: Vec<Token> = repeat(Token::Eof).take(n).collect();
-    let size: Vec<isize> = repeat(0).take(n).collect();
-    let scan_stack: Vec<usize> = repeat(0).take(n).collect();
+    let token = vec![Token::Eof; n];
+    let size = vec![0_isize; n];
+    let scan_stack = vec![0_usize; n];
     Printer {
         out: out,
         buf_len: n,

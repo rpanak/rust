@@ -23,7 +23,6 @@ use parse::token;
 use ptr::P;
 
 use std::collections::HashMap;
-use std::iter::repeat;
 
 #[derive(PartialEq)]
 enum ArgumentType {
@@ -78,9 +77,10 @@ struct Context<'a, 'b:'a> {
 /// expressions.
 ///
 /// If parsing succeeds, the return value is:
-///
-///     Some((fmtstr, unnamed arguments, ordering of named arguments,
-///           named arguments))
+/// ```ignore
+/// Some((fmtstr, unnamed arguments, ordering of named arguments,
+///       named arguments))
+/// ```
 fn parse_args(ecx: &mut ExtCtxt, sp: Span, tts: &[ast::TokenTree])
               -> Option<(P<ast::Expr>, Vec<P<ast::Expr>>, Vec<String>,
                          HashMap<String, P<ast::Expr>>)> {
@@ -94,7 +94,7 @@ fn parse_args(ecx: &mut ExtCtxt, sp: Span, tts: &[ast::TokenTree])
         ecx.span_err(sp, "requires at least a format string argument");
         return None;
     }
-    let fmtstr = p.parse_expr();
+    let fmtstr = panictry!(p.parse_expr());
     let mut named = false;
     while p.token != token::Eof {
         if !panictry!(p.eat(&token::Comma)) {
@@ -122,11 +122,10 @@ fn parse_args(ecx: &mut ExtCtxt, sp: Span, tts: &[ast::TokenTree])
                     return None;
                 }
             };
-            let interned_name = token::get_ident(ident);
-            let name = &interned_name[..];
+            let name: &str = &ident.name.as_str();
 
             panictry!(p.expect(&token::Eq));
-            let e = p.parse_expr();
+            let e = panictry!(p.parse_expr());
             match names.get(name) {
                 None => {}
                 Some(prev) => {
@@ -140,7 +139,7 @@ fn parse_args(ecx: &mut ExtCtxt, sp: Span, tts: &[ast::TokenTree])
             order.push(name.to_string());
             names.insert(name.to_string(), e);
         } else {
-            args.push(p.parse_expr());
+            args.push(panictry!(p.parse_expr()));
         }
     }
     Some((fmtstr, args, order, names))
@@ -307,8 +306,7 @@ impl<'a, 'b> Context<'a, 'b> {
     }
 
     fn rtpath(ecx: &ExtCtxt, s: &str) -> Vec<ast::Ident> {
-        vec![ecx.ident_of_std("core"), ecx.ident_of("fmt"), ecx.ident_of("rt"),
-             ecx.ident_of("v1"), ecx.ident_of(s)]
+        ecx.std_path(&["fmt", "rt", "v1", s])
     }
 
     fn trans_count(&self, c: parse::Count) -> P<ast::Expr> {
@@ -452,6 +450,7 @@ impl<'a, 'b> Context<'a, 'b> {
             Some(ecx.lifetime(sp, special_idents::static_lifetime.name)),
             ast::MutImmutable);
         let slice = ecx.expr_vec_slice(sp, pieces);
+        // static instead of const to speed up codegen by not requiring this to be inlined
         let st = ast::ItemStatic(ty, ast::MutImmutable, slice);
 
         let name = ecx.ident_of(name);
@@ -468,7 +467,7 @@ impl<'a, 'b> Context<'a, 'b> {
     /// to
     fn into_expr(mut self) -> P<ast::Expr> {
         let mut locals = Vec::new();
-        let mut names: Vec<_> = repeat(None).take(self.name_positions.len()).collect();
+        let mut names = vec![None; self.name_positions.len()];
         let mut pats = Vec::new();
         let mut heads = Vec::new();
 
@@ -580,11 +579,8 @@ impl<'a, 'b> Context<'a, 'b> {
             ("new_v1_formatted", vec![pieces, args_slice, fmt])
         };
 
-        self.ecx.expr_call_global(self.macsp, vec!(
-                self.ecx.ident_of_std("core"),
-                self.ecx.ident_of("fmt"),
-                self.ecx.ident_of("Arguments"),
-                self.ecx.ident_of(fn_name)), fn_args)
+        let path = self.ecx.std_path(&["fmt", "Arguments", fn_name]);
+        self.ecx.expr_call_global(self.macsp, path, fn_args)
     }
 
     fn format_arg(ecx: &ExtCtxt, macsp: Span, sp: Span,
@@ -611,24 +607,15 @@ impl<'a, 'b> Context<'a, 'b> {
                 }
             }
             Unsigned => {
-                return ecx.expr_call_global(macsp, vec![
-                        ecx.ident_of_std("core"),
-                        ecx.ident_of("fmt"),
-                        ecx.ident_of("ArgumentV1"),
-                        ecx.ident_of("from_usize")], vec![arg])
+                let path = ecx.std_path(&["fmt", "ArgumentV1", "from_usize"]);
+                return ecx.expr_call_global(macsp, path, vec![arg])
             }
         };
 
-        let format_fn = ecx.path_global(sp, vec![
-                ecx.ident_of_std("core"),
-                ecx.ident_of("fmt"),
-                ecx.ident_of(trait_),
-                ecx.ident_of("fmt")]);
-        ecx.expr_call_global(macsp, vec![
-                ecx.ident_of_std("core"),
-                ecx.ident_of("fmt"),
-                ecx.ident_of("ArgumentV1"),
-                ecx.ident_of("new")], vec![arg, ecx.expr_path(format_fn)])
+        let path = ecx.std_path(&["fmt", trait_, "fmt"]);
+        let format_fn = ecx.path_global(sp, path);
+        let path = ecx.std_path(&["fmt", "ArgumentV1", "new"]);
+        ecx.expr_call_global(macsp, path, vec![arg, ecx.expr_path(format_fn)])
     }
 }
 

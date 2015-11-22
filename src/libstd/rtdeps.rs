@@ -12,10 +12,8 @@
 //! the standard library This varies per-platform, but these libraries are
 //! necessary for running libstd.
 
-#![unstable(feature = "std_misc")]
-
-// All platforms need to link to rustrt
-#[cfg(not(test))]
+// A few small shims in C that haven't been translated to Rust yet
+#[cfg(all(not(test), not(windows)))]
 #[link(name = "rust_builtin", kind = "static")]
 extern {}
 
@@ -41,8 +39,17 @@ extern {}
 
 #[cfg(any(target_os = "dragonfly",
           target_os = "bitrig",
+          target_os = "netbsd",
           target_os = "openbsd"))]
 #[link(name = "pthread")]
+extern {}
+
+// For PNaCl targets, nacl_io is a Pepper wrapper for some IO functions
+// missing (ie always error) in Newlib.
+#[cfg(all(target_os = "nacl", not(test)))]
+#[link(name = "nacl_io", kind = "static")]
+#[link(name = "c++", kind = "static")] // for `nacl_io` and EH.
+#[link(name = "pthread", kind = "static")]
 extern {}
 
 #[cfg(target_os = "macos")]

@@ -8,6 +8,8 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+#![allow(deprecated)]
+
 use std::cell::{RefCell, Cell};
 use std::collections::{HashSet, HashMap};
 use std::dynamic_lib::DynamicLibrary;
@@ -22,9 +24,11 @@ use std::sync::{Arc, Mutex};
 
 use testing;
 use rustc_lint;
+use rustc::front::map as hir_map;
 use rustc::session::{self, config};
-use rustc::session::config::get_unstable_features_setting;
+use rustc::session::config::{get_unstable_features_setting, OutputType};
 use rustc::session::search_paths::{SearchPaths, PathKind};
+use rustc_front::lowering::{lower_crate, LoweringContext};
 use rustc_back::tempdir::TempDir;
 use rustc_driver::{driver, Compilation};
 use syntax::codemap::CodeMap;
@@ -75,17 +79,23 @@ pub fn run(input: &str,
     rustc_lint::register_builtins(&mut sess.lint_store.borrow_mut(), Some(&sess));
 
     let mut cfg = config::build_configuration(&sess);
-    cfg.extend(config::parse_cfgspecs(cfgs).into_iter());
+    cfg.extend(config::parse_cfgspecs(cfgs));
     let krate = driver::phase_1_parse_input(&sess, cfg, &input);
     let krate = driver::phase_2_configure_and_expand(&sess, krate,
                                                      "rustdoc-test", None)
         .expect("phase_2_configure_and_expand aborted in rustdoc!");
+    let krate = driver::assign_node_ids(&sess, krate);
+    let lcx = LoweringContext::new(&sess, Some(&krate));
+    let krate = lower_crate(&lcx, &krate);
 
     let opts = scrape_test_config(&krate);
 
+    let mut forest = hir_map::Forest::new(krate);
+    let map = hir_map::map_crate(&mut forest);
+
     let ctx = core::DocContext {
-        krate: &krate,
-        maybe_typed: core::NotTyped(sess),
+        map: &map,
+        maybe_typed: core::NotTyped(&sess),
         input: input,
         external_paths: RefCell::new(Some(HashMap::new())),
         external_traits: RefCell::new(None),
@@ -96,7 +106,7 @@ pub fn run(input: &str,
     };
 
     let mut v = RustdocVisitor::new(&ctx, None);
-    v.visit(ctx.krate);
+    v.visit(ctx.map.krate());
     let mut krate = v.clean(&ctx);
     match crate_name {
         Some(name) => krate.name = name,
@@ -120,7 +130,7 @@ pub fn run(input: &str,
 }
 
 // Look for #![doc(test(no_crate_inject))], used by crates in the std facade
-fn scrape_test_config(krate: &::syntax::ast::Crate) -> TestOptions {
+fn scrape_test_config(krate: &::rustc_front::hir::Crate) -> TestOptions {
     use syntax::attr::AttrMetaMethods;
     use syntax::print::pprust;
 
@@ -129,12 +139,13 @@ fn scrape_test_config(krate: &::syntax::ast::Crate) -> TestOptions {
         attrs: Vec::new(),
     };
 
-    let attrs = krate.attrs.iter().filter(|a| a.check_name("doc"))
+    let attrs = krate.attrs.iter()
+                     .filter(|a| a.check_name("doc"))
                      .filter_map(|a| a.meta_item_list())
-                     .flat_map(|l| l.iter())
+                     .flat_map(|l| l)
                      .filter(|a| a.check_name("test"))
                      .filter_map(|a| a.meta_item_list())
-                     .flat_map(|l| l.iter());
+                     .flat_map(|l| l);
     for attr in attrs {
         if attr.check_name("no_crate_inject") {
             opts.no_crate_inject = true;
@@ -159,13 +170,15 @@ fn runtest(test: &str, cratename: &str, libs: SearchPaths,
     // never wrap the test in `fn main() { ... }`
     let test = maketest(test, Some(cratename), as_test_harness, opts);
     let input = config::Input::Str(test.to_string());
+    let mut outputs = HashMap::new();
+    outputs.insert(OutputType::Exe, None);
 
     let sessopts = config::Options {
         maybe_sysroot: Some(env::current_exe().unwrap().parent().unwrap()
                                               .parent().unwrap().to_path_buf()),
         search_paths: libs,
         crate_types: vec!(config::CrateTypeExecutable),
-        output_types: vec!(config::OutputTypeExe),
+        output_types: outputs,
         externs: externs,
         cg: config::CodegenOptions {
             prefer_dynamic: true,
@@ -239,7 +252,7 @@ fn runtest(test: &str, cratename: &str, libs: SearchPaths,
         let path = env::var_os(var).unwrap_or(OsString::new());
         let mut path = env::split_paths(&path).collect::<Vec<_>>();
         path.insert(0, libdir.clone());
-        env::join_paths(path.iter()).unwrap()
+        env::join_paths(path).unwrap()
     };
     cmd.env(var, &newpath);
 
@@ -359,7 +372,7 @@ impl Collector {
             let s = self.current_header.as_ref().map(|s| &**s).unwrap_or("");
             format!("{}_{}", s, self.cnt)
         } else {
-            format!("{}_{}", self.names.connect("::"), self.cnt)
+            format!("{}_{}", self.names.join("::"), self.cnt)
         };
         self.cnt += 1;
         let libs = self.libs.clone();
@@ -409,22 +422,59 @@ impl Collector {
 
 impl DocFolder for Collector {
     fn fold_item(&mut self, item: clean::Item) -> Option<clean::Item> {
-        let pushed = match item.name {
-            Some(ref name) if name.is_empty() => false,
-            Some(ref name) => { self.names.push(name.to_string()); true }
-            None => false
+        let current_name = match item.name {
+            Some(ref name) if !name.is_empty() => Some(name.clone()),
+            _ => typename_if_impl(&item)
         };
-        match item.doc_value() {
-            Some(doc) => {
-                self.cnt = 0;
-                markdown::find_testable_code(doc, &mut *self);
-            }
-            None => {}
+
+        let pushed = if let Some(name) = current_name {
+            self.names.push(name);
+            true
+        } else {
+            false
+        };
+
+        if let Some(doc) = item.doc_value() {
+            self.cnt = 0;
+            markdown::find_testable_code(doc, &mut *self);
         }
+
         let ret = self.fold_item_recur(item);
         if pushed {
             self.names.pop();
         }
+
         return ret;
+
+        // FIXME: it would be better to not have the escaped version in the first place
+        fn unescape_for_testname(mut s: String) -> String {
+            // for refs `&foo`
+            if s.contains("&amp;") {
+                s = s.replace("&amp;", "&");
+
+                // `::&'a mut Foo::` looks weird, let's make it `::<&'a mut Foo>`::
+                if let Some('&') = s.chars().nth(0) {
+                    s = format!("<{}>", s);
+                }
+            }
+
+            // either `<..>` or `->`
+            if s.contains("&gt;") {
+                s.replace("&gt;", ">")
+                 .replace("&lt;", "<")
+            } else {
+                s
+            }
+        }
+
+        fn typename_if_impl(item: &clean::Item) -> Option<String> {
+            if let clean::ItemEnum::ImplItem(ref impl_) = item.inner {
+                let path = impl_.for_.to_string();
+                let unescaped_path = unescape_for_testname(path);
+                Some(unescaped_path)
+            } else {
+                None
+            }
+        }
     }
 }

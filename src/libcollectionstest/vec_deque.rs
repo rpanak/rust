@@ -10,7 +10,6 @@
 
 use std::collections::VecDeque;
 use std::fmt::Debug;
-use std::hash::{SipHasher, self};
 
 use test;
 
@@ -476,7 +475,7 @@ fn test_drain() {
         let mut d: VecDeque<i32> = VecDeque::new();
 
         {
-            let mut iter = d.drain();
+            let mut iter = d.drain(..);
 
             assert_eq!(iter.size_hint(), (0, Some(0)));
             assert_eq!(iter.next(), None);
@@ -493,7 +492,7 @@ fn test_drain() {
             d.push_back(i);
         }
 
-        assert_eq!(d.drain().collect::<Vec<_>>(), [0, 1, 2, 3, 4]);
+        assert_eq!(d.drain(..).collect::<Vec<_>>(), [0, 1, 2, 3, 4]);
         assert!(d.is_empty());
     }
 
@@ -507,7 +506,7 @@ fn test_drain() {
             d.push_front(i);
         }
 
-        assert_eq!(d.drain().collect::<Vec<_>>(), [8,7,6,0,1,2,3,4]);
+        assert_eq!(d.drain(..).collect::<Vec<_>>(), [8,7,6,0,1,2,3,4]);
         assert!(d.is_empty());
     }
 
@@ -522,7 +521,7 @@ fn test_drain() {
         }
 
         {
-            let mut it = d.drain();
+            let mut it = d.drain(..);
             assert_eq!(it.size_hint(), (8, Some(8)));
             assert_eq!(it.next(), Some(8));
             assert_eq!(it.size_hint(), (7, Some(7)));
@@ -537,8 +536,6 @@ fn test_drain() {
 
 #[test]
 fn test_from_iter() {
-    use std::iter;
-
     let v = vec!(1,2,3,4,5,6,7);
     let deq: VecDeque<_> = v.iter().cloned().collect();
     let u: Vec<_> = deq.iter().cloned().collect();
@@ -605,7 +602,7 @@ fn test_hash() {
   y.push_back(2);
   y.push_back(3);
 
-  assert!(hash::hash::<_, SipHasher>(&x) == hash::hash::<_, SipHasher>(&y));
+  assert!(::hash(&x) == ::hash(&y));
 }
 
 #[test]
@@ -893,4 +890,30 @@ fn test_retain() {
     buf.retain(|&x| x % 2 == 0);
     let v: Vec<_> = buf.into_iter().collect();
     assert_eq!(&v[..], &[2, 4]);
+}
+
+#[test]
+fn test_extend_ref() {
+    let mut v = VecDeque::new();
+    v.push_back(1);
+    v.extend(&[2, 3, 4]);
+
+    assert_eq!(v.len(), 4);
+    assert_eq!(v[0], 1);
+    assert_eq!(v[1], 2);
+    assert_eq!(v[2], 3);
+    assert_eq!(v[3], 4);
+
+    let mut w = VecDeque::new();
+    w.push_back(5);
+    w.push_back(6);
+    v.extend(&w);
+
+    assert_eq!(v.len(), 6);
+    assert_eq!(v[0], 1);
+    assert_eq!(v[1], 2);
+    assert_eq!(v[2], 3);
+    assert_eq!(v[3], 4);
+    assert_eq!(v[4], 5);
+    assert_eq!(v[5], 6);
 }

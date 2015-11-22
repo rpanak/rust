@@ -120,8 +120,18 @@ impl<N:Debug,E:Debug> Graph<N,E> {
     }
 
     #[inline]
+    pub fn len_nodes(&self) -> usize {
+        self.nodes.len()
+    }
+
+    #[inline]
     pub fn all_edges<'a>(&'a self) -> &'a [Edge<E>] {
         &self.edges
+    }
+
+    #[inline]
+    pub fn len_edges(&self) -> usize {
+        self.edges.len()
     }
 
     ///////////////////////////////////////////////////////////////////////////
@@ -358,9 +368,9 @@ pub struct DepthFirstTraversal<'g, N:'g, E:'g> {
 }
 
 impl<'g, N:Debug, E:Debug> Iterator for DepthFirstTraversal<'g, N, E> {
-    type Item = &'g N;
+    type Item = NodeIndex;
 
-    fn next(&mut self) -> Option<&'g N> {
+    fn next(&mut self) -> Option<NodeIndex> {
         while let Some(idx) = self.stack.pop() {
             if !self.visited.insert(idx.node_id()) {
                 continue;
@@ -372,7 +382,7 @@ impl<'g, N:Debug, E:Debug> Iterator for DepthFirstTraversal<'g, N, E> {
                 }
             }
 
-            return Some(self.graph.node_data(idx));
+            return Some(idx);
         }
 
         return None;

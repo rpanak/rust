@@ -8,20 +8,25 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-// Make sure casts between thin pointer <-> fat pointer are illegal.
+trait Trait {}
 
-pub trait Trait {}
-
+// Make sure casts between thin-pointer <-> fat pointer obey RFC401
 fn main() {
     let a: &[i32] = &[1, 2, 3];
     let b: Box<[i32]> = Box::new([1, 2, 3]);
+    let p = a as *const [i32];
+    let q = a.as_ptr();
 
-    a as usize; //~ ERROR non-scalar cast
+    a as usize; //~ ERROR casting
     b as usize; //~ ERROR non-scalar cast
+    p as usize;
+    //~^ ERROR casting
+    //~^^ HELP cast through a thin pointer
 
-    let a: usize = 42;
-    a as *const [i32]; //~ ERROR cast to fat pointer: `usize` as `*const [i32]`
+    // #22955
+    q as *const [i32]; //~ ERROR casting
 
-    let a: *const u8 = &42;
-    a as *const [u8]; //~ ERROR cast to fat pointer: `*const u8` as `*const [u8]`
+    // #21397
+    let t: *mut (Trait + 'static) = 0 as *mut _; //~ ERROR casting
+    let mut fail: *const str = 0 as *const str; //~ ERROR casting
 }

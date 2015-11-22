@@ -16,8 +16,11 @@
 #![stable(feature = "rust1", since = "1.0.0")]
 #![allow(missing_docs)]
 
+#[stable(feature = "rust1", since = "1.0.0")]
 pub use core::num::{Zero, One};
+#[stable(feature = "rust1", since = "1.0.0")]
 pub use core::num::{FpCategory, ParseIntError, ParseFloatError};
+#[stable(feature = "rust1", since = "1.0.0")]
 pub use core::num::{wrapping, Wrapping};
 
 #[cfg(test)] use cmp::PartialEq;
@@ -43,7 +46,6 @@ pub fn test_num<T>(ten: T, two: T) where
 
 #[cfg(test)]
 mod tests {
-    use core::prelude::*;
     use super::*;
     use i8;
     use i16;

@@ -17,7 +17,7 @@ use owned_slice::OwnedSlice;
 use parse::token;
 use print::pprust;
 use ptr::P;
-use visit::Visitor;
+use visit::{FnKind, Visitor};
 use visit;
 
 use std::cmp;
@@ -25,23 +25,15 @@ use std::u32;
 
 pub fn path_name_i(idents: &[Ident]) -> String {
     // FIXME: Bad copies (#2543 -- same for everything else that says "bad")
-    idents.iter().map(|i| {
-        token::get_ident(*i).to_string()
-    }).collect::<Vec<String>>().connect("::")
+    idents.iter().map(|i| i.to_string()).collect::<Vec<String>>().join("::")
 }
 
-pub fn local_def(id: NodeId) -> DefId {
-    ast::DefId { krate: LOCAL_CRATE, node: id }
-}
-
-pub fn is_local(did: ast::DefId) -> bool { did.krate == LOCAL_CRATE }
-
-pub fn stmt_id(s: &Stmt) -> NodeId {
+pub fn stmt_id(s: &Stmt) -> Option<NodeId> {
     match s.node {
-      StmtDecl(_, id) => id,
-      StmtExpr(_, id) => id,
-      StmtSemi(_, id) => id,
-      StmtMac(..) => panic!("attempted to analyze unexpanded stmt")
+      StmtDecl(_, id) => Some(id),
+      StmtExpr(_, id) => Some(id),
+      StmtSemi(_, id) => Some(id),
+      StmtMac(..) => None,
     }
 }
 
@@ -109,10 +101,9 @@ pub fn is_by_value_unop(u: UnOp) -> bool {
 
 pub fn unop_to_string(op: UnOp) -> &'static str {
     match op {
-      UnUniq => "box() ",
-      UnDeref => "*",
-      UnNot => "!",
-      UnNeg => "-",
+        UnDeref => "*",
+        UnNot => "!",
+        UnNeg => "-",
     }
 }
 
@@ -224,12 +215,6 @@ pub fn ident_to_pat(id: NodeId, s: Span, i: Ident) -> P<Pat> {
     })
 }
 
-pub fn name_to_dummy_lifetime(name: Name) -> Lifetime {
-    Lifetime { id: DUMMY_NODE_ID,
-               span: codemap::DUMMY_SP,
-               name: name }
-}
-
 /// Generate a "pretty" name for an `impl` from its type and trait.
 /// This is designed so that symbols of `impl`'d methods give some
 /// hint of where they came from, (previously they would all just be
@@ -256,26 +241,6 @@ pub fn struct_field_visibility(field: ast::StructField) -> Visibility {
         ast::NamedField(_, v) | ast::UnnamedField(v) => v
     }
 }
-
-/// Maps a binary operator to its precedence
-pub fn operator_prec(op: ast::BinOp_) -> usize {
-  match op {
-      // 'as' sits here with 12
-      BiMul | BiDiv | BiRem     => 11,
-      BiAdd | BiSub             => 10,
-      BiShl | BiShr             =>  9,
-      BiBitAnd                  =>  8,
-      BiBitXor                  =>  7,
-      BiBitOr                   =>  6,
-      BiLt | BiLe | BiGe | BiGt | BiEq | BiNe => 3,
-      BiAnd                     =>  2,
-      BiOr                      =>  1
-  }
-}
-
-/// Precedence of the `as` operator, which is a binary operator
-/// not appearing in the prior table.
-pub const AS_PREC: usize = 12;
 
 pub fn empty_generics() -> Generics {
     Generics {
@@ -324,13 +289,12 @@ pub trait IdVisitingOperation {
 
 pub struct IdVisitor<'a, O:'a> {
     pub operation: &'a mut O,
-    pub pass_through_items: bool,
     pub visited_outermost: bool,
 }
 
 impl<'a, O: IdVisitingOperation> IdVisitor<'a, O> {
     fn visit_generics_helper(&mut self, generics: &Generics) {
-        for type_parameter in &*generics.ty_params {
+        for type_parameter in generics.ty_params.iter() {
             self.operation.visit_id(type_parameter.id)
         }
         for lifetime in &generics.lifetimes {
@@ -354,12 +318,10 @@ impl<'a, 'v, O: IdVisitingOperation> Visitor<'v> for IdVisitor<'a, O> {
     }
 
     fn visit_item(&mut self, item: &Item) {
-        if !self.pass_through_items {
-            if self.visited_outermost {
-                return
-            } else {
-                self.visited_outermost = true
-            }
+        if self.visited_outermost {
+            return
+        } else {
+            self.visited_outermost = true
         }
 
         self.operation.visit_id(item.id);
@@ -373,11 +335,6 @@ impl<'a, 'v, O: IdVisitingOperation> Visitor<'v> for IdVisitor<'a, O> {
                             self.operation.visit_id(path.node.id())
                         }
                     }
-                }
-            }
-            ItemEnum(ref enum_definition, _) => {
-                for variant in &enum_definition.variants {
-                    self.operation.visit_id(variant.node.id)
                 }
             }
             _ => {}
@@ -399,7 +356,8 @@ impl<'a, 'v, O: IdVisitingOperation> Visitor<'v> for IdVisitor<'a, O> {
     }
 
     fn visit_stmt(&mut self, statement: &Stmt) {
-        self.operation.visit_id(ast_util::stmt_id(statement));
+        self.operation
+            .visit_id(ast_util::stmt_id(statement).expect("attempted to visit unexpanded stmt"));
         visit::walk_stmt(self, statement)
     }
 
@@ -429,24 +387,22 @@ impl<'a, 'v, O: IdVisitingOperation> Visitor<'v> for IdVisitor<'a, O> {
                 block: &'v Block,
                 span: Span,
                 node_id: NodeId) {
-        if !self.pass_through_items {
-            match function_kind {
-                visit::FkMethod(..) if self.visited_outermost => return,
-                visit::FkMethod(..) => self.visited_outermost = true,
-                _ => {}
-            }
+        match function_kind {
+            FnKind::Method(..) if self.visited_outermost => return,
+            FnKind::Method(..) => self.visited_outermost = true,
+            _ => {}
         }
 
         self.operation.visit_id(node_id);
 
         match function_kind {
-            visit::FkItemFn(_, generics, _, _, _) => {
+            FnKind::ItemFn(_, generics, _, _, _, _) => {
                 self.visit_generics_helper(generics)
             }
-            visit::FkMethod(_, sig, _) => {
+            FnKind::Method(_, sig, _) => {
                 self.visit_generics_helper(&sig.generics)
             }
-            visit::FkFnBlock => {}
+            FnKind::Closure => {}
         }
 
         for argument in &function_declaration.inputs {
@@ -459,10 +415,8 @@ impl<'a, 'v, O: IdVisitingOperation> Visitor<'v> for IdVisitor<'a, O> {
                        block,
                        span);
 
-        if !self.pass_through_items {
-            if let visit::FkMethod(..) = function_kind {
-                self.visited_outermost = false;
-            }
+        if let FnKind::Method(..) = function_kind {
+            self.visited_outermost = false;
         }
     }
 
@@ -471,13 +425,13 @@ impl<'a, 'v, O: IdVisitingOperation> Visitor<'v> for IdVisitor<'a, O> {
         visit::walk_struct_field(self, struct_field)
     }
 
-    fn visit_struct_def(&mut self,
-                        struct_def: &StructDef,
+    fn visit_variant_data(&mut self,
+                        struct_def: &VariantData,
                         _: ast::Ident,
                         _: &ast::Generics,
-                        id: NodeId) {
-        self.operation.visit_id(id);
-        struct_def.ctor_id.map(|ctor_id| self.operation.visit_id(ctor_id));
+                        _: NodeId,
+                        _: Span) {
+        self.operation.visit_id(struct_def.id());
         visit::walk_struct_def(self, struct_def);
     }
 
@@ -491,12 +445,12 @@ impl<'a, 'v, O: IdVisitingOperation> Visitor<'v> for IdVisitor<'a, O> {
         visit::walk_impl_item(self, ii);
     }
 
-    fn visit_lifetime_ref(&mut self, lifetime: &Lifetime) {
+    fn visit_lifetime(&mut self, lifetime: &Lifetime) {
         self.operation.visit_id(lifetime.id);
     }
 
     fn visit_lifetime_def(&mut self, def: &LifetimeDef) {
-        self.visit_lifetime_ref(&def.lifetime);
+        self.visit_lifetime(&def.lifetime);
     }
 
     fn visit_trait_ref(&mut self, trait_ref: &TraitRef) {
@@ -505,19 +459,18 @@ impl<'a, 'v, O: IdVisitingOperation> Visitor<'v> for IdVisitor<'a, O> {
     }
 }
 
-pub fn visit_ids_for_inlined_item<O: IdVisitingOperation>(item: &InlinedItem,
-                                                          operation: &mut O) {
-    let mut id_visitor = IdVisitor {
-        operation: operation,
-        pass_through_items: true,
-        visited_outermost: false,
-    };
-
-    visit::walk_inlined_item(&mut id_visitor, item);
+pub struct IdRangeComputingVisitor {
+    pub result: IdRange,
 }
 
-struct IdRangeComputingVisitor {
-    result: IdRange,
+impl IdRangeComputingVisitor {
+    pub fn new() -> IdRangeComputingVisitor {
+        IdRangeComputingVisitor { result: IdRange::max() }
+    }
+
+    pub fn result(&self) -> IdRange {
+        self.result
+    }
 }
 
 impl IdVisitingOperation for IdRangeComputingVisitor {
@@ -526,72 +479,21 @@ impl IdVisitingOperation for IdRangeComputingVisitor {
     }
 }
 
-pub fn compute_id_range_for_inlined_item(item: &InlinedItem) -> IdRange {
-    let mut visitor = IdRangeComputingVisitor {
-        result: IdRange::max()
-    };
-    visit_ids_for_inlined_item(item, &mut visitor);
-    visitor.result
-}
-
 /// Computes the id range for a single fn body, ignoring nested items.
-pub fn compute_id_range_for_fn_body(fk: visit::FnKind,
+pub fn compute_id_range_for_fn_body(fk: FnKind,
                                     decl: &FnDecl,
                                     body: &Block,
                                     sp: Span,
                                     id: NodeId)
                                     -> IdRange
 {
-    let mut visitor = IdRangeComputingVisitor {
-        result: IdRange::max()
-    };
+    let mut visitor = IdRangeComputingVisitor::new();
     let mut id_visitor = IdVisitor {
         operation: &mut visitor,
-        pass_through_items: false,
         visited_outermost: false,
     };
     id_visitor.visit_fn(fk, decl, body, sp, id);
     id_visitor.operation.result
-}
-
-pub fn walk_pat<F>(pat: &Pat, mut it: F) -> bool where F: FnMut(&Pat) -> bool {
-    // FIXME(#19596) this is a workaround, but there should be a better way
-    fn walk_pat_<G>(pat: &Pat, it: &mut G) -> bool where G: FnMut(&Pat) -> bool {
-        if !(*it)(pat) {
-            return false;
-        }
-
-        match pat.node {
-            PatIdent(_, _, Some(ref p)) => walk_pat_(&**p, it),
-            PatStruct(_, ref fields, _) => {
-                fields.iter().all(|field| walk_pat_(&*field.node.pat, it))
-            }
-            PatEnum(_, Some(ref s)) | PatTup(ref s) => {
-                s.iter().all(|p| walk_pat_(&**p, it))
-            }
-            PatBox(ref s) | PatRegion(ref s, _) => {
-                walk_pat_(&**s, it)
-            }
-            PatVec(ref before, ref slice, ref after) => {
-                before.iter().all(|p| walk_pat_(&**p, it)) &&
-                slice.iter().all(|p| walk_pat_(&**p, it)) &&
-                after.iter().all(|p| walk_pat_(&**p, it))
-            }
-            PatMac(_) => panic!("attempted to analyze unexpanded pattern"),
-            PatWild(_) | PatLit(_) | PatRange(_, _) | PatIdent(_, _, _) |
-            PatEnum(_, _) | PatQPath(_, _) => {
-                true
-            }
-        }
-    }
-
-    walk_pat_(pat, &mut it)
-}
-
-/// Returns true if the given struct def is tuple-like; i.e. that its fields
-/// are unnamed.
-pub fn struct_def_is_tuple_like(struct_def: &ast::StructDef) -> bool {
-    struct_def.ctor_id.is_some()
 }
 
 /// Returns true if the given pattern consists solely of an identifier
@@ -615,7 +517,7 @@ pub fn path_name_eq(a : &ast::Path, b : &ast::Path) -> bool {
 // are two arrays of segments equal when compared unhygienically?
 pub fn segments_name_eq(a : &[ast::PathSegment], b : &[ast::PathSegment]) -> bool {
     a.len() == b.len() &&
-    a.iter().zip(b.iter()).all(|(s, t)| {
+    a.iter().zip(b).all(|(s, t)| {
         s.identifier.name == t.identifier.name &&
         // FIXME #7743: ident -> name problems in lifetime comparison?
         // can types contain idents?
@@ -636,21 +538,21 @@ mod tests {
     use ast::*;
     use super::*;
 
-    fn ident_to_segment(id : &Ident) -> PathSegment {
-        PathSegment {identifier: id.clone(),
+    fn ident_to_segment(id: Ident) -> PathSegment {
+        PathSegment {identifier: id,
                      parameters: PathParameters::none()}
     }
 
     #[test] fn idents_name_eq_test() {
         assert!(segments_name_eq(
-            &[Ident{name:Name(3),ctxt:4}, Ident{name:Name(78),ctxt:82}]
-                .iter().map(ident_to_segment).collect::<Vec<PathSegment>>(),
-            &[Ident{name:Name(3),ctxt:104}, Ident{name:Name(78),ctxt:182}]
-                .iter().map(ident_to_segment).collect::<Vec<PathSegment>>()));
+            &[Ident::new(Name(3),SyntaxContext(4)), Ident::new(Name(78),SyntaxContext(82))]
+                .iter().cloned().map(ident_to_segment).collect::<Vec<PathSegment>>(),
+            &[Ident::new(Name(3),SyntaxContext(104)), Ident::new(Name(78),SyntaxContext(182))]
+                .iter().cloned().map(ident_to_segment).collect::<Vec<PathSegment>>()));
         assert!(!segments_name_eq(
-            &[Ident{name:Name(3),ctxt:4}, Ident{name:Name(78),ctxt:82}]
-                .iter().map(ident_to_segment).collect::<Vec<PathSegment>>(),
-            &[Ident{name:Name(3),ctxt:104}, Ident{name:Name(77),ctxt:182}]
-                .iter().map(ident_to_segment).collect::<Vec<PathSegment>>()));
+            &[Ident::new(Name(3),SyntaxContext(4)), Ident::new(Name(78),SyntaxContext(82))]
+                .iter().cloned().map(ident_to_segment).collect::<Vec<PathSegment>>(),
+            &[Ident::new(Name(3),SyntaxContext(104)), Ident::new(Name(77),SyntaxContext(182))]
+                .iter().cloned().map(ident_to_segment).collect::<Vec<PathSegment>>()));
     }
 }

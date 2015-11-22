@@ -34,7 +34,7 @@ pub fn expand_line(cx: &mut ExtCtxt, sp: Span, tts: &[ast::TokenTree])
                    -> Box<base::MacResult+'static> {
     base::check_zero_tts(cx, sp, tts, "line!");
 
-    let topmost = cx.original_span_in_file();
+    let topmost = cx.expansion_cause();
     let loc = cx.codemap().lookup_char_pos(topmost.lo);
 
     base::MacEager::expr(cx.expr_u32(topmost, loc.line as u32))
@@ -45,7 +45,7 @@ pub fn expand_column(cx: &mut ExtCtxt, sp: Span, tts: &[ast::TokenTree])
                   -> Box<base::MacResult+'static> {
     base::check_zero_tts(cx, sp, tts, "column!");
 
-    let topmost = cx.original_span_in_file();
+    let topmost = cx.expansion_cause();
     let loc = cx.codemap().lookup_char_pos(topmost.lo);
 
     base::MacEager::expr(cx.expr_u32(topmost, loc.col.to_usize() as u32))
@@ -58,7 +58,7 @@ pub fn expand_file(cx: &mut ExtCtxt, sp: Span, tts: &[ast::TokenTree])
                    -> Box<base::MacResult+'static> {
     base::check_zero_tts(cx, sp, tts, "file!");
 
-    let topmost = cx.original_span_in_file();
+    let topmost = cx.expansion_cause();
     let loc = cx.codemap().lookup_char_pos(topmost.lo);
     let filename = token::intern_and_get_ident(&loc.file.name);
     base::MacEager::expr(cx.expr_str(topmost, filename))
@@ -76,9 +76,9 @@ pub fn expand_mod(cx: &mut ExtCtxt, sp: Span, tts: &[ast::TokenTree])
     base::check_zero_tts(cx, sp, tts, "module_path!");
     let string = cx.mod_path()
                    .iter()
-                   .map(|x| token::get_ident(*x).to_string())
+                   .map(|x| x.to_string())
                    .collect::<Vec<String>>()
-                   .connect("::");
+                   .join("::");
     base::MacEager::expr(cx.expr_str(
             sp,
             token::intern_and_get_ident(&string[..])))
@@ -109,13 +109,13 @@ pub fn expand_include<'cx>(cx: &'cx mut ExtCtxt, sp: Span, tts: &[ast::TokenTree
     }
     impl<'a> base::MacResult for ExpandResult<'a> {
         fn make_expr(mut self: Box<ExpandResult<'a>>) -> Option<P<ast::Expr>> {
-            Some(self.p.parse_expr())
+            Some(panictry!(self.p.parse_expr()))
         }
         fn make_items(mut self: Box<ExpandResult<'a>>)
                       -> Option<SmallVector<P<ast::Item>>> {
             let mut ret = SmallVector::zero();
             while self.p.token != token::Eof {
-                match self.p.parse_item() {
+                match panictry!(self.p.parse_item()) {
                     Some(item) => ret.push(item),
                     None => panic!(self.p.span_fatal(
                         self.p.span,
@@ -156,7 +156,7 @@ pub fn expand_include_str(cx: &mut ExtCtxt, sp: Span, tts: &[ast::TokenTree])
             // dependency information
             let filename = format!("{}", file.display());
             let interned = token::intern_and_get_ident(&src[..]);
-            cx.codemap().new_filemap(filename, src);
+            cx.codemap().new_filemap_and_lines(&filename, &src);
 
             base::MacEager::expr(cx.expr_str(sp, interned))
         }
@@ -187,9 +187,9 @@ pub fn expand_include_bytes(cx: &mut ExtCtxt, sp: Span, tts: &[ast::TokenTree])
             // Add this input file to the code map to make it available as
             // dependency information, but don't enter it's contents
             let filename = format!("{}", file.display());
-            cx.codemap().new_filemap(filename, "".to_string());
+            cx.codemap().new_filemap_and_lines(&filename, "");
 
-            base::MacEager::expr(cx.expr_lit(sp, ast::LitBinary(Rc::new(bytes))))
+            base::MacEager::expr(cx.expr_lit(sp, ast::LitByteStr(Rc::new(bytes))))
         }
     }
 }

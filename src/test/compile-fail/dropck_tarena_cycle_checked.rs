@@ -16,7 +16,7 @@
 //  which is a reduction of this code to more directly show the reason
 //  for the error message we see here.)
 
-#![allow(unstable)]
+#![feature(const_fn)]
 
 extern crate arena;
 
@@ -25,10 +25,9 @@ use std::cell::Cell;
 use id::Id;
 
 mod s {
-    #![allow(unstable)]
-    use std::sync::atomic::{AtomicUsize, ATOMIC_USIZE_INIT, Ordering};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
-    static S_COUNT: AtomicUsize = ATOMIC_USIZE_INIT;
+    static S_COUNT: AtomicUsize = AtomicUsize::new(0);
 
     pub fn next_count() -> usize {
         S_COUNT.fetch_add(1, Ordering::SeqCst) + 1

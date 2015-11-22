@@ -8,16 +8,12 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#![unstable(feature = "udp", reason = "remaining functions have not been \
-                                       scrutinized enough to be stabilized")]
-
-use prelude::v1::*;
-
 use fmt;
 use io::{self, Error, ErrorKind};
-use net::{ToSocketAddrs, SocketAddr, IpAddr};
+use net::{ToSocketAddrs, SocketAddr};
 use sys_common::net as net_imp;
-use sys_common::{AsInner, FromInner};
+use sys_common::{AsInner, FromInner, IntoInner};
+use time::Duration;
 
 /// A User Datagram Protocol socket.
 ///
@@ -96,36 +92,52 @@ impl UdpSocket {
         self.0.duplicate().map(UdpSocket)
     }
 
-    /// Sets the broadcast flag on or off.
-    pub fn set_broadcast(&self, on: bool) -> io::Result<()> {
-        self.0.set_broadcast(on)
-    }
-
-    /// Sets the multicast loop flag to the specified value.
+    /// Sets the read timeout to the timeout specified.
     ///
-    /// This lets multicast packets loop back to local sockets (if enabled)
-    pub fn set_multicast_loop(&self, on: bool) -> io::Result<()> {
-        self.0.set_multicast_loop(on)
+    /// If the value specified is `None`, then `read` calls will block
+    /// indefinitely. It is an error to pass the zero `Duration` to this
+    /// method.
+    ///
+    /// # Note
+    ///
+    /// Platforms may return a different error code whenever a read times out as
+    /// a result of setting this option. For example Unix typically returns an
+    /// error of the kind `WouldBlock`, but Windows may return `TimedOut`.
+    #[stable(feature = "socket_timeout", since = "1.4.0")]
+    pub fn set_read_timeout(&self, dur: Option<Duration>) -> io::Result<()> {
+        self.0.set_read_timeout(dur)
     }
 
-    /// Joins a multicast IP address (becomes a member of it).
-    pub fn join_multicast(&self, multi: &IpAddr) -> io::Result<()> {
-        self.0.join_multicast(multi)
+    /// Sets the write timeout to the timeout specified.
+    ///
+    /// If the value specified is `None`, then `write` calls will block
+    /// indefinitely. It is an error to pass the zero `Duration` to this
+    /// method.
+    ///
+    /// # Note
+    ///
+    /// Platforms may return a different error code whenever a write times out
+    /// as a result of setting this option. For example Unix typically returns
+    /// an error of the kind `WouldBlock`, but Windows may return `TimedOut`.
+    #[stable(feature = "socket_timeout", since = "1.4.0")]
+    pub fn set_write_timeout(&self, dur: Option<Duration>) -> io::Result<()> {
+        self.0.set_write_timeout(dur)
     }
 
-    /// Leaves a multicast IP address (drops membership from it).
-    pub fn leave_multicast(&self, multi: &IpAddr) -> io::Result<()> {
-        self.0.leave_multicast(multi)
+    /// Returns the read timeout of this socket.
+    ///
+    /// If the timeout is `None`, then `read` calls will block indefinitely.
+    #[stable(feature = "socket_timeout", since = "1.4.0")]
+    pub fn read_timeout(&self) -> io::Result<Option<Duration>> {
+        self.0.read_timeout()
     }
 
-    /// Sets the multicast TTL.
-    pub fn set_multicast_time_to_live(&self, ttl: i32) -> io::Result<()> {
-        self.0.multicast_time_to_live(ttl)
-    }
-
-    /// Sets this socket's TTL.
-    pub fn set_time_to_live(&self, ttl: i32) -> io::Result<()> {
-        self.0.time_to_live(ttl)
+    /// Returns the write timeout of this socket.
+    ///
+    /// If the timeout is `None`, then `write` calls will block indefinitely.
+    #[stable(feature = "socket_timeout", since = "1.4.0")]
+    pub fn write_timeout(&self) -> io::Result<Option<Duration>> {
+        self.0.write_timeout()
     }
 }
 
@@ -137,6 +149,11 @@ impl FromInner<net_imp::UdpSocket> for UdpSocket {
     fn from_inner(inner: net_imp::UdpSocket) -> UdpSocket { UdpSocket(inner) }
 }
 
+impl IntoInner<net_imp::UdpSocket> for UdpSocket {
+    fn into_inner(self) -> net_imp::UdpSocket { self.0 }
+}
+
+#[stable(feature = "rust1", since = "1.0.0")]
 impl fmt::Debug for UdpSocket {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         self.0.fmt(f)
@@ -152,6 +169,7 @@ mod tests {
     use net::test::{next_test_ip4, next_test_ip6};
     use sync::mpsc::channel;
     use sys_common::AsInner;
+    use time::Duration;
     use thread;
 
     fn each_ip(f: &mut FnMut(SocketAddr, SocketAddr)) {
@@ -168,14 +186,13 @@ mod tests {
         }
     }
 
-    // FIXME #11530 this fails on android because tests are run as root
-    #[cfg_attr(any(windows, target_os = "android"), ignore)]
     #[test]
     fn bind_error() {
-        let addr = SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), 1);
-        match UdpSocket::bind(&addr) {
+        match UdpSocket::bind("1.1.1.1:9999") {
             Ok(..) => panic!(),
-            Err(e) => assert_eq!(e.kind(), ErrorKind::PermissionDenied),
+            Err(e) => {
+                assert_eq!(e.kind(), ErrorKind::AddrNotAvailable)
+            }
         }
     }
 
@@ -320,5 +337,67 @@ mod tests {
         let compare = format!("UdpSocket {{ addr: {:?}, {}: {:?} }}",
                               socket_addr, name, udpsock_inner);
         assert_eq!(format!("{:?}", udpsock), compare);
+    }
+
+    // FIXME: re-enabled bitrig/openbsd/netbsd tests once their socket timeout code
+    //        no longer has rounding errors.
+    #[cfg_attr(any(target_os = "bitrig", target_os = "netbsd", target_os = "openbsd"), ignore)]
+    #[test]
+    fn timeouts() {
+        let addr = next_test_ip4();
+
+        let stream = t!(UdpSocket::bind(&addr));
+        let dur = Duration::new(15410, 0);
+
+        assert_eq!(None, t!(stream.read_timeout()));
+
+        t!(stream.set_read_timeout(Some(dur)));
+        assert_eq!(Some(dur), t!(stream.read_timeout()));
+
+        assert_eq!(None, t!(stream.write_timeout()));
+
+        t!(stream.set_write_timeout(Some(dur)));
+        assert_eq!(Some(dur), t!(stream.write_timeout()));
+
+        t!(stream.set_read_timeout(None));
+        assert_eq!(None, t!(stream.read_timeout()));
+
+        t!(stream.set_write_timeout(None));
+        assert_eq!(None, t!(stream.write_timeout()));
+    }
+
+    #[test]
+    fn test_read_timeout() {
+        let addr = next_test_ip4();
+
+        let mut stream = t!(UdpSocket::bind(&addr));
+        t!(stream.set_read_timeout(Some(Duration::from_millis(1000))));
+
+        let mut buf = [0; 10];
+        let wait = Duration::span(|| {
+            let kind = stream.recv_from(&mut buf).err().expect("expected error").kind();
+            assert!(kind == ErrorKind::WouldBlock || kind == ErrorKind::TimedOut);
+        });
+        assert!(wait > Duration::from_millis(400));
+    }
+
+    #[test]
+    fn test_read_with_timeout() {
+        let addr = next_test_ip4();
+
+        let mut stream = t!(UdpSocket::bind(&addr));
+        t!(stream.set_read_timeout(Some(Duration::from_millis(1000))));
+
+        t!(stream.send_to(b"hello world", &addr));
+
+        let mut buf = [0; 11];
+        t!(stream.recv_from(&mut buf));
+        assert_eq!(b"hello world", &buf[..]);
+
+        let wait = Duration::span(|| {
+            let kind = stream.recv_from(&mut buf).err().expect("expected error").kind();
+            assert!(kind == ErrorKind::WouldBlock || kind == ErrorKind::TimedOut);
+        });
+        assert!(wait > Duration::from_millis(400));
     }
 }

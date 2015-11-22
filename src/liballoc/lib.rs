@@ -22,9 +22,9 @@
 //!
 //! ## Boxed values
 //!
-//! The [`Box`](boxed/index.html) type is the core owned pointer type in Rust.
-//! There can only be one owner of a `Box`, and the owner can decide to mutate
-//! the contents, which live on the heap.
+//! The [`Box`](boxed/index.html) type is a smart pointer type. There can
+//! only be one owner of a `Box`, and the owner can decide to mutate the
+//! contents, which live on the heap.
 //!
 //! This type can be sent among threads efficiently as the size of a `Box` value
 //! is the same as that of a pointer. Tree-like data structures are often built
@@ -59,42 +59,68 @@
 // Do not remove on snapshot creation. Needed for bootstrap. (Issue #22364)
 #![cfg_attr(stage0, feature(custom_attribute))]
 #![crate_name = "alloc"]
-#![unstable(feature = "alloc")]
-#![feature(staged_api)]
-#![staged_api]
 #![crate_type = "rlib"]
-#![doc(html_logo_url = "http://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
+#![staged_api]
+#![allow(unused_attributes)]
+#![unstable(feature = "alloc",
+            reason = "this library is unlikely to be stabilized in its current \
+                      form or name",
+            issue = "27783")]
+#![doc(html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
        html_favicon_url = "https://doc.rust-lang.org/favicon.ico",
-       html_root_url = "http://doc.rust-lang.org/nightly/")]
-#![doc(test(no_crate_inject))]
-
-#![feature(no_std)]
+       html_root_url = "https://doc.rust-lang.org/nightly/",
+       issue_tracker_base_url = "https://github.com/rust-lang/rust/issues/",
+       test(no_crate_inject, attr(allow(unused_variables), deny(warnings))))]
 #![no_std]
+#![cfg_attr(not(stage0), needs_allocator)]
+
 #![feature(allocator)]
+#![feature(box_syntax)]
+#![feature(coerce_unsized)]
+#![feature(core)]
+#![feature(core_intrinsics)]
+#![feature(core_slice_ext)]
 #![feature(custom_attribute)]
 #![feature(fundamental)]
 #![feature(lang_items)]
-#![feature(box_syntax)]
+#![feature(no_std)]
+#![feature(nonzero)]
+#![feature(num_bits_bytes)]
 #![feature(optin_builtin_traits)]
+#![feature(placement_in_syntax)]
+#![feature(placement_new_protocol)]
+#![feature(raw)]
+#![feature(shared)]
+#![feature(staged_api)]
 #![feature(unboxed_closures)]
-#![feature(unsafe_no_drop_flag, filling_drop)]
-#![feature(core)]
 #![feature(unique)]
-#![cfg_attr(test, feature(test, alloc, rustc_private))]
-#![cfg_attr(all(not(feature = "external_funcs"), not(feature = "external_crate")),
-            feature(libc))]
+#![feature(unsafe_no_drop_flag, filling_drop)]
+// SNAP 1af31d4
+#![allow(unused_features)]
+// SNAP 1af31d4
+#![allow(unused_attributes)]
+#![feature(dropck_parametricity)]
+#![feature(unsize)]
+#![feature(core_slice_ext)]
+#![feature(core_str_ext)]
+#![feature(drop_in_place)]
 
+#![cfg_attr(stage0, feature(alloc_system))]
+#![cfg_attr(not(stage0), feature(needs_allocator))]
 
-#[macro_use]
-extern crate core;
+#![cfg_attr(test, feature(test, rustc_private, box_heap))]
 
-#[cfg(all(not(feature = "external_funcs"), not(feature = "external_crate")))]
-extern crate libc;
+#[cfg(stage0)]
+extern crate alloc_system;
 
 // Allow testing this library
 
-#[cfg(test)] #[macro_use] extern crate std;
-#[cfg(test)] #[macro_use] extern crate log;
+#[cfg(test)]
+#[macro_use]
+extern crate std;
+#[cfg(test)]
+#[macro_use]
+extern crate log;
 
 // Heaps provided for low-level allocation strategies
 
@@ -109,40 +135,23 @@ pub mod heap;
 #[cfg(not(test))]
 pub mod boxed;
 #[cfg(test)]
-mod boxed { pub use std::boxed::{Box, HEAP}; }
+mod boxed {
+    pub use std::boxed::{Box, HEAP};
+}
 #[cfg(test)]
 mod boxed_test;
-#[cfg(not(stage0))]
 pub mod arc;
-#[cfg(stage0)]
-mod arc_stage0;
-#[cfg(stage0)]
-pub mod arc {
-    pub use arc_stage0::*;
-}
 pub mod rc;
+pub mod raw_vec;
 
 /// Common out-of-memory routine
 #[cold]
 #[inline(never)]
+#[unstable(feature = "oom", reason = "not a scrutinized interface",
+           issue = "27700")]
 pub fn oom() -> ! {
     // FIXME(#14674): This really needs to do something other than just abort
     //                here, but any printing done must be *guaranteed* to not
     //                allocate.
     unsafe { core::intrinsics::abort() }
 }
-
-// FIXME(#14344): When linking liballoc with libstd, this library will be linked
-//                as an rlib (it only exists as an rlib). It turns out that an
-//                optimized standard library doesn't actually use *any* symbols
-//                from this library. Everything is inlined and optimized away.
-//                This means that linkers will actually omit the object for this
-//                file, even though it may be needed in the future.
-//
-//                To get around this for now, we define a dummy symbol which
-//                will never get inlined so the stdlib can call it. The stdlib's
-//                reference to this symbol will cause this library's object file
-//                to get linked in to libstd successfully (the linker won't
-//                optimize it out).
-#[doc(hidden)]
-pub fn fixme_14344_be_sure_to_link_to_collections() {}

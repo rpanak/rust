@@ -9,7 +9,7 @@
 // except according to those terms.
 
 use std::cmp::Ordering::{Equal, Greater, Less};
-use std::str::{Utf8Error, from_utf8};
+use std::str::from_utf8;
 
 #[test]
 fn test_le() {
@@ -17,36 +17,6 @@ fn test_le() {
     assert!("" <= "foo");
     assert!("foo" <= "foo");
     assert!("foo" != "bar");
-}
-
-#[allow(deprecated)]
-#[test]
-fn test_len() {
-    assert_eq!("".len(), 0);
-    assert_eq!("hello world".len(), 11);
-    assert_eq!("\x63".len(), 1);
-    assert_eq!("\u{a2}".len(), 2);
-    assert_eq!("\u{3c0}".len(), 2);
-    assert_eq!("\u{2620}".len(), 3);
-    assert_eq!("\u{1d11e}".len(), 4);
-
-    assert_eq!("".chars().count(), 0);
-    assert_eq!("hello world".chars().count(), 11);
-    assert_eq!("\x63".chars().count(), 1);
-    assert_eq!("\u{a2}".chars().count(), 1);
-    assert_eq!("\u{3c0}".chars().count(), 1);
-    assert_eq!("\u{2620}".chars().count(), 1);
-    assert_eq!("\u{1d11e}".chars().count(), 1);
-    assert_eq!("ประเทศไทย中华Việt Nam".chars().count(), 19);
-
-    assert_eq!("ｈｅｌｌｏ".width(false), 10);
-    assert_eq!("ｈｅｌｌｏ".width(true), 10);
-    assert_eq!("\0\0\0\0\0".width(false), 0);
-    assert_eq!("\0\0\0\0\0".width(true), 0);
-    assert_eq!("".width(false), 0);
-    assert_eq!("".width(true), 0);
-    assert_eq!("\u{2081}\u{2082}\u{2083}\u{2084}".width(false), 4);
-    assert_eq!("\u{2081}\u{2082}\u{2083}\u{2084}".width(true), 8);
 }
 
 #[test]
@@ -71,17 +41,17 @@ fn test_rfind() {
 
 #[test]
 fn test_collect() {
-    let empty = String::from_str("");
+    let empty = "";
     let s: String = empty.chars().collect();
     assert_eq!(empty, s);
-    let data = String::from_str("ประเทศไทย中");
+    let data = "ประเทศไทย中";
     let s: String = data.chars().collect();
     assert_eq!(data, s);
 }
 
 #[test]
 fn test_into_bytes() {
-    let data = String::from_str("asdf");
+    let data = String::from("asdf");
     let buf = data.into_bytes();
     assert_eq!(buf, b"asdf");
 }
@@ -98,7 +68,7 @@ fn test_find_str() {
     assert!(data[2..4].find("ab").is_none());
 
     let string = "ประเทศไทย中华Việt Nam";
-    let mut data = String::from_str(string);
+    let mut data = String::from(string);
     data.push_str(string);
     assert!(data.find("ไท华").is_none());
     assert_eq!(data[0..43].find(""), Some(0));
@@ -115,19 +85,26 @@ fn test_find_str() {
     assert_eq!(data[43..86].find("ย中"), Some(67 - 43));
     assert_eq!(data[43..86].find("iệt"), Some(77 - 43));
     assert_eq!(data[43..86].find("Nam"), Some(83 - 43));
-}
 
-#[test]
-fn test_slice_chars() {
-    fn t(a: &str, b: &str, start: usize) {
-        assert_eq!(a.slice_chars(start, start + b.chars().count()), b);
+    // find every substring -- assert that it finds it, or an earlier occurrence.
+    let string = "Việt Namacbaabcaabaaba";
+    for (i, ci) in string.char_indices() {
+        let ip = i + ci.len_utf8();
+        for j in string[ip..].char_indices()
+                             .map(|(i, _)| i)
+                             .chain(Some(string.len() - ip))
+        {
+            let pat = &string[i..ip + j];
+            assert!(match string.find(pat) {
+                None => false,
+                Some(x) => x <= i,
+            });
+            assert!(match string.rfind(pat) {
+                None => false,
+                Some(x) => x >= i,
+            });
+        }
     }
-    t("", "", 0);
-    t("hello", "llo", 2);
-    t("hello", "el", 1);
-    t("αβλ", "β", 1);
-    t("αβλ", "", 3);
-    assert_eq!("ะเทศไท", "ประเทศไทย中华Việt Nam".slice_chars(2, 8));
 }
 
 fn s(x: &str) -> String { x.to_string() }
@@ -158,32 +135,32 @@ fn test_concat_for_different_lengths() {
     test_concat!("abc", ["", "a", "bc"]);
 }
 
-macro_rules! test_connect {
+macro_rules! test_join {
     ($expected: expr, $string: expr, $delim: expr) => {
         {
-            let s = $string.connect($delim);
+            let s = $string.join($delim);
             assert_eq!($expected, s);
         }
     }
 }
 
 #[test]
-fn test_connect_for_different_types() {
-    test_connect!("a-b", ["a", "b"], "-");
+fn test_join_for_different_types() {
+    test_join!("a-b", ["a", "b"], "-");
     let hyphen = "-".to_string();
-    test_connect!("a-b", [s("a"), s("b")], &*hyphen);
-    test_connect!("a-b", vec!["a", "b"], &*hyphen);
-    test_connect!("a-b", &*vec!["a", "b"], "-");
-    test_connect!("a-b", vec![s("a"), s("b")], "-");
+    test_join!("a-b", [s("a"), s("b")], &*hyphen);
+    test_join!("a-b", vec!["a", "b"], &*hyphen);
+    test_join!("a-b", &*vec!["a", "b"], "-");
+    test_join!("a-b", vec![s("a"), s("b")], "-");
 }
 
 #[test]
-fn test_connect_for_different_lengths() {
+fn test_join_for_different_lengths() {
     let empty: &[&str] = &[];
-    test_connect!("", empty, "-");
-    test_connect!("a", ["a"], "-");
-    test_connect!("a-b", ["a", "b"], "-");
-    test_connect!("-a-bc", ["", "a", "bc"], "-");
+    test_join!("", empty, "-");
+    test_join!("a", ["a"], "-");
+    test_join!("a-b", ["a", "b"], "-");
+    test_join!("-a-bc", ["", "a", "bc"], "-");
 }
 
 #[test]
@@ -210,10 +187,8 @@ fn test_unsafe_slice() {
         rs
     }
     let letters = a_million_letter_a();
-    assert!(half_a_million_letter_a() ==
-        unsafe {String::from_str(letters.slice_unchecked(
-                                 0,
-                                 500000))});
+    assert_eq!(half_a_million_letter_a(),
+        unsafe { letters.slice_unchecked(0, 500000)});
 }
 
 #[test]
@@ -247,13 +222,12 @@ fn test_is_empty() {
 #[test]
 fn test_replace() {
     let a = "a";
-    assert_eq!("".replace(a, "b"), String::from_str(""));
-    assert_eq!("a".replace(a, "b"), String::from_str("b"));
-    assert_eq!("ab".replace(a, "b"), String::from_str("bb"));
+    assert_eq!("".replace(a, "b"), "");
+    assert_eq!("a".replace(a, "b"), "b");
+    assert_eq!("ab".replace(a, "b"), "bb");
     let test = "test";
-    assert!(" test test ".replace(test, "toast") ==
-        String::from_str(" toast toast "));
-    assert_eq!(" test test ".replace(test, ""), String::from_str("   "));
+    assert_eq!(" test test ".replace(test, "toast"), " toast toast ");
+    assert_eq!(" test test ".replace(test, ""), "   ");
 }
 
 #[test]
@@ -327,8 +301,7 @@ fn test_slice() {
         rs
     }
     let letters = a_million_letter_x();
-    assert!(half_a_million_letter_x() ==
-        String::from_str(&letters[0..3 * 500000]));
+    assert_eq!(half_a_million_letter_x(), &letters[0..3 * 500000]);
 }
 
 #[test]
@@ -581,7 +554,7 @@ fn test_as_bytes() {
 fn test_as_bytes_fail() {
     // Don't double free. (I'm not sure if this exercises the
     // original problem code path anymore.)
-    let s = String::from_str("");
+    let s = String::from("");
     let _bytes = s.as_bytes();
     panic!();
 }
@@ -599,34 +572,11 @@ fn test_as_ptr() {
 }
 
 #[test]
-fn test_subslice_offset() {
-    let a = "kernelsprite";
-    let b = &a[7..a.len()];
-    let c = &a[0..a.len() - 6];
-    assert_eq!(a.subslice_offset(b), 7);
-    assert_eq!(a.subslice_offset(c), 0);
-
-    let string = "a\nb\nc";
-    let lines: Vec<&str> = string.lines().collect();
-    assert_eq!(string.subslice_offset(lines[0]), 0);
-    assert_eq!(string.subslice_offset(lines[1]), 2);
-    assert_eq!(string.subslice_offset(lines[2]), 4);
-}
-
-#[test]
-#[should_panic]
-fn test_subslice_offset_2() {
-    let a = "alchemiter";
-    let b = "cruxtruder";
-    a.subslice_offset(b);
-}
-
-#[test]
 fn vec_str_conversions() {
-    let s1: String = String::from_str("All mimsy were the borogoves");
+    let s1: String = String::from("All mimsy were the borogoves");
 
     let v: Vec<u8> = s1.as_bytes().to_vec();
-    let s2: String = String::from_str(from_utf8(&v).unwrap());
+    let s2: String = String::from(from_utf8(&v).unwrap());
     let mut i = 0;
     let n1 = s1.len();
     let n2 = v.len();
@@ -689,50 +639,69 @@ fn test_char_at_reverse() {
 }
 
 #[test]
+fn test_split_at() {
+    let s = "ศไทย中华Việt Nam";
+    for (index, _) in s.char_indices() {
+        let (a, b) = s.split_at(index);
+        assert_eq!(&s[..a.len()], a);
+        assert_eq!(&s[a.len()..], b);
+    }
+    let (a, b) = s.split_at(s.len());
+    assert_eq!(a, s);
+    assert_eq!(b, "");
+}
+
+#[test]
+fn test_split_at_mut() {
+    use std::ascii::AsciiExt;
+    let mut s = "Hello World".to_string();
+    {
+        let (a, b) = s.split_at_mut(5);
+        a.make_ascii_uppercase();
+        b.make_ascii_lowercase();
+    }
+    assert_eq!(s, "HELLO world");
+}
+
+#[test]
+#[should_panic]
+fn test_split_at_boundscheck() {
+    let s = "ศไทย中华Việt Nam";
+    s.split_at(1);
+}
+
+#[test]
 fn test_escape_unicode() {
-    assert_eq!("abc".escape_unicode(),
-               String::from_str("\\u{61}\\u{62}\\u{63}"));
-    assert_eq!("a c".escape_unicode(),
-               String::from_str("\\u{61}\\u{20}\\u{63}"));
-    assert_eq!("\r\n\t".escape_unicode(),
-               String::from_str("\\u{d}\\u{a}\\u{9}"));
-    assert_eq!("'\"\\".escape_unicode(),
-               String::from_str("\\u{27}\\u{22}\\u{5c}"));
-    assert_eq!("\x00\x01\u{fe}\u{ff}".escape_unicode(),
-               String::from_str("\\u{0}\\u{1}\\u{fe}\\u{ff}"));
-    assert_eq!("\u{100}\u{ffff}".escape_unicode(),
-               String::from_str("\\u{100}\\u{ffff}"));
-    assert_eq!("\u{10000}\u{10ffff}".escape_unicode(),
-               String::from_str("\\u{10000}\\u{10ffff}"));
-    assert_eq!("ab\u{fb00}".escape_unicode(),
-               String::from_str("\\u{61}\\u{62}\\u{fb00}"));
-    assert_eq!("\u{1d4ea}\r".escape_unicode(),
-               String::from_str("\\u{1d4ea}\\u{d}"));
+    assert_eq!("abc".escape_unicode(), "\\u{61}\\u{62}\\u{63}");
+    assert_eq!("a c".escape_unicode(), "\\u{61}\\u{20}\\u{63}");
+    assert_eq!("\r\n\t".escape_unicode(), "\\u{d}\\u{a}\\u{9}");
+    assert_eq!("'\"\\".escape_unicode(), "\\u{27}\\u{22}\\u{5c}");
+    assert_eq!("\x00\x01\u{fe}\u{ff}".escape_unicode(), "\\u{0}\\u{1}\\u{fe}\\u{ff}");
+    assert_eq!("\u{100}\u{ffff}".escape_unicode(), "\\u{100}\\u{ffff}");
+    assert_eq!("\u{10000}\u{10ffff}".escape_unicode(), "\\u{10000}\\u{10ffff}");
+    assert_eq!("ab\u{fb00}".escape_unicode(), "\\u{61}\\u{62}\\u{fb00}");
+    assert_eq!("\u{1d4ea}\r".escape_unicode(), "\\u{1d4ea}\\u{d}");
 }
 
 #[test]
 fn test_escape_default() {
-    assert_eq!("abc".escape_default(), String::from_str("abc"));
-    assert_eq!("a c".escape_default(), String::from_str("a c"));
-    assert_eq!("\r\n\t".escape_default(), String::from_str("\\r\\n\\t"));
-    assert_eq!("'\"\\".escape_default(), String::from_str("\\'\\\"\\\\"));
-    assert_eq!("\u{100}\u{ffff}".escape_default(),
-               String::from_str("\\u{100}\\u{ffff}"));
-    assert_eq!("\u{10000}\u{10ffff}".escape_default(),
-               String::from_str("\\u{10000}\\u{10ffff}"));
-    assert_eq!("ab\u{fb00}".escape_default(),
-               String::from_str("ab\\u{fb00}"));
-    assert_eq!("\u{1d4ea}\r".escape_default(),
-               String::from_str("\\u{1d4ea}\\r"));
+    assert_eq!("abc".escape_default(), "abc");
+    assert_eq!("a c".escape_default(), "a c");
+    assert_eq!("\r\n\t".escape_default(), "\\r\\n\\t");
+    assert_eq!("'\"\\".escape_default(), "\\'\\\"\\\\");
+    assert_eq!("\u{100}\u{ffff}".escape_default(), "\\u{100}\\u{ffff}");
+    assert_eq!("\u{10000}\u{10ffff}".escape_default(), "\\u{10000}\\u{10ffff}");
+    assert_eq!("ab\u{fb00}".escape_default(), "ab\\u{fb00}");
+    assert_eq!("\u{1d4ea}\r".escape_default(), "\\u{1d4ea}\\r");
 }
 
 #[test]
 fn test_total_ord() {
-    "1234".cmp("123") == Greater;
-    "123".cmp("1234") == Less;
-    "1234".cmp("1234") == Equal;
-    "12345555".cmp("123456") == Less;
-    "22".cmp("1234") == Greater;
+    assert_eq!("1234".cmp("123"), Greater);
+    assert_eq!("123".cmp("1234"), Less);
+    assert_eq!("1234".cmp("1234"), Equal);
+    assert_eq!("12345555".cmp("123456"), Less);
+    assert_eq!("22".cmp("1234"), Greater);
 }
 
 #[test]
@@ -848,6 +817,37 @@ fn test_bytes_revator() {
 }
 
 #[test]
+fn test_bytesator_nth() {
+    let s = "ศไทย中华Việt Nam";
+    let v = [
+        224, 184, 168, 224, 185, 132, 224, 184, 151, 224, 184, 162, 228,
+        184, 173, 229, 141, 142, 86, 105, 225, 187, 135, 116, 32, 78, 97,
+        109
+    ];
+
+    let mut b = s.bytes();
+    assert_eq!(b.nth(2).unwrap(), v[2]);
+    assert_eq!(b.nth(10).unwrap(), v[10]);
+    assert_eq!(b.nth(200), None);
+}
+
+#[test]
+fn test_bytesator_count() {
+    let s = "ศไทย中华Việt Nam";
+
+    let b = s.bytes();
+    assert_eq!(b.count(), 28)
+}
+
+#[test]
+fn test_bytesator_last() {
+    let s = "ศไทย中华Việt Nam";
+
+    let b = s.bytes();
+    assert_eq!(b.last().unwrap(), 109)
+}
+
+#[test]
 fn test_char_indicesator() {
     let s = "ศไทย中华Việt Nam";
     let p = [0, 3, 6, 9, 12, 15, 18, 19, 20, 23, 24, 25, 26, 27];
@@ -945,508 +945,15 @@ fn test_split_whitespace() {
     assert_eq!(words, ["Märy", "häd", "ä", "little", "lämb", "Little", "lämb"])
 }
 
-#[allow(deprecated)]
-#[test]
-fn test_nfd_chars() {
-    macro_rules! t {
-        ($input: expr, $expected: expr) => {
-            assert_eq!($input.nfd_chars().collect::<String>(), $expected);
-        }
-    }
-    t!("abc", "abc");
-    t!("\u{1e0b}\u{1c4}", "d\u{307}\u{1c4}");
-    t!("\u{2026}", "\u{2026}");
-    t!("\u{2126}", "\u{3a9}");
-    t!("\u{1e0b}\u{323}", "d\u{323}\u{307}");
-    t!("\u{1e0d}\u{307}", "d\u{323}\u{307}");
-    t!("a\u{301}", "a\u{301}");
-    t!("\u{301}a", "\u{301}a");
-    t!("\u{d4db}", "\u{1111}\u{1171}\u{11b6}");
-    t!("\u{ac1c}", "\u{1100}\u{1162}");
-}
-
-#[allow(deprecated)]
-#[test]
-fn test_nfkd_chars() {
-    macro_rules! t {
-        ($input: expr, $expected: expr) => {
-            assert_eq!($input.nfkd_chars().collect::<String>(), $expected);
-        }
-    }
-    t!("abc", "abc");
-    t!("\u{1e0b}\u{1c4}", "d\u{307}DZ\u{30c}");
-    t!("\u{2026}", "...");
-    t!("\u{2126}", "\u{3a9}");
-    t!("\u{1e0b}\u{323}", "d\u{323}\u{307}");
-    t!("\u{1e0d}\u{307}", "d\u{323}\u{307}");
-    t!("a\u{301}", "a\u{301}");
-    t!("\u{301}a", "\u{301}a");
-    t!("\u{d4db}", "\u{1111}\u{1171}\u{11b6}");
-    t!("\u{ac1c}", "\u{1100}\u{1162}");
-}
-
-#[allow(deprecated)]
-#[test]
-fn test_nfc_chars() {
-    macro_rules! t {
-        ($input: expr, $expected: expr) => {
-            assert_eq!($input.nfc_chars().collect::<String>(), $expected);
-        }
-    }
-    t!("abc", "abc");
-    t!("\u{1e0b}\u{1c4}", "\u{1e0b}\u{1c4}");
-    t!("\u{2026}", "\u{2026}");
-    t!("\u{2126}", "\u{3a9}");
-    t!("\u{1e0b}\u{323}", "\u{1e0d}\u{307}");
-    t!("\u{1e0d}\u{307}", "\u{1e0d}\u{307}");
-    t!("a\u{301}", "\u{e1}");
-    t!("\u{301}a", "\u{301}a");
-    t!("\u{d4db}", "\u{d4db}");
-    t!("\u{ac1c}", "\u{ac1c}");
-    t!("a\u{300}\u{305}\u{315}\u{5ae}b", "\u{e0}\u{5ae}\u{305}\u{315}b");
-}
-
-#[allow(deprecated)]
-#[test]
-fn test_nfkc_chars() {
-    macro_rules! t {
-        ($input: expr, $expected: expr) => {
-            assert_eq!($input.nfkc_chars().collect::<String>(), $expected);
-        }
-    }
-    t!("abc", "abc");
-    t!("\u{1e0b}\u{1c4}", "\u{1e0b}D\u{17d}");
-    t!("\u{2026}", "...");
-    t!("\u{2126}", "\u{3a9}");
-    t!("\u{1e0b}\u{323}", "\u{1e0d}\u{307}");
-    t!("\u{1e0d}\u{307}", "\u{1e0d}\u{307}");
-    t!("a\u{301}", "\u{e1}");
-    t!("\u{301}a", "\u{301}a");
-    t!("\u{d4db}", "\u{d4db}");
-    t!("\u{ac1c}", "\u{ac1c}");
-    t!("a\u{300}\u{305}\u{315}\u{5ae}b", "\u{e0}\u{5ae}\u{305}\u{315}b");
-}
-
 #[test]
 fn test_lines() {
-    let data = "\nMäry häd ä little lämb\n\nLittle lämb\n";
+    let data = "\nMäry häd ä little lämb\n\r\nLittle lämb\n";
     let lines: Vec<&str> = data.lines().collect();
     assert_eq!(lines, ["", "Märy häd ä little lämb", "", "Little lämb"]);
 
-    let data = "\nMäry häd ä little lämb\n\nLittle lämb"; // no trailing \n
+    let data = "\r\nMäry häd ä little lämb\n\nLittle lämb"; // no trailing \n
     let lines: Vec<&str> = data.lines().collect();
     assert_eq!(lines, ["", "Märy häd ä little lämb", "", "Little lämb"]);
-}
-
-#[allow(deprecated)]
-#[test]
-fn test_graphemes() {
-    use std::iter::order;
-
-    // official Unicode test data
-    // from http://www.unicode.org/Public/UCD/latest/ucd/auxiliary/GraphemeBreakTest.txt
-    let test_same: [(_, &[_]); 325] = [
-        ("\u{20}\u{20}", &["\u{20}", "\u{20}"]),
-        ("\u{20}\u{308}\u{20}", &["\u{20}\u{308}", "\u{20}"]),
-        ("\u{20}\u{D}", &["\u{20}", "\u{D}"]),
-        ("\u{20}\u{308}\u{D}", &["\u{20}\u{308}", "\u{D}"]),
-        ("\u{20}\u{A}", &["\u{20}", "\u{A}"]),
-        ("\u{20}\u{308}\u{A}", &["\u{20}\u{308}", "\u{A}"]),
-        ("\u{20}\u{1}", &["\u{20}", "\u{1}"]),
-        ("\u{20}\u{308}\u{1}", &["\u{20}\u{308}", "\u{1}"]),
-        ("\u{20}\u{300}", &["\u{20}\u{300}"]),
-        ("\u{20}\u{308}\u{300}", &["\u{20}\u{308}\u{300}"]),
-        ("\u{20}\u{1100}", &["\u{20}", "\u{1100}"]),
-        ("\u{20}\u{308}\u{1100}", &["\u{20}\u{308}", "\u{1100}"]),
-        ("\u{20}\u{1160}", &["\u{20}", "\u{1160}"]),
-        ("\u{20}\u{308}\u{1160}", &["\u{20}\u{308}", "\u{1160}"]),
-        ("\u{20}\u{11A8}", &["\u{20}", "\u{11A8}"]),
-        ("\u{20}\u{308}\u{11A8}", &["\u{20}\u{308}", "\u{11A8}"]),
-        ("\u{20}\u{AC00}", &["\u{20}", "\u{AC00}"]),
-        ("\u{20}\u{308}\u{AC00}", &["\u{20}\u{308}", "\u{AC00}"]),
-        ("\u{20}\u{AC01}", &["\u{20}", "\u{AC01}"]),
-        ("\u{20}\u{308}\u{AC01}", &["\u{20}\u{308}", "\u{AC01}"]),
-        ("\u{20}\u{1F1E6}", &["\u{20}", "\u{1F1E6}"]),
-        ("\u{20}\u{308}\u{1F1E6}", &["\u{20}\u{308}", "\u{1F1E6}"]),
-        ("\u{20}\u{378}", &["\u{20}", "\u{378}"]),
-        ("\u{20}\u{308}\u{378}", &["\u{20}\u{308}", "\u{378}"]),
-        ("\u{D}\u{20}", &["\u{D}", "\u{20}"]),
-        ("\u{D}\u{308}\u{20}", &["\u{D}", "\u{308}", "\u{20}"]),
-        ("\u{D}\u{D}", &["\u{D}", "\u{D}"]),
-        ("\u{D}\u{308}\u{D}", &["\u{D}", "\u{308}", "\u{D}"]),
-        ("\u{D}\u{A}", &["\u{D}\u{A}"]),
-        ("\u{D}\u{308}\u{A}", &["\u{D}", "\u{308}", "\u{A}"]),
-        ("\u{D}\u{1}", &["\u{D}", "\u{1}"]),
-        ("\u{D}\u{308}\u{1}", &["\u{D}", "\u{308}", "\u{1}"]),
-        ("\u{D}\u{300}", &["\u{D}", "\u{300}"]),
-        ("\u{D}\u{308}\u{300}", &["\u{D}", "\u{308}\u{300}"]),
-        ("\u{D}\u{903}", &["\u{D}", "\u{903}"]),
-        ("\u{D}\u{1100}", &["\u{D}", "\u{1100}"]),
-        ("\u{D}\u{308}\u{1100}", &["\u{D}", "\u{308}", "\u{1100}"]),
-        ("\u{D}\u{1160}", &["\u{D}", "\u{1160}"]),
-        ("\u{D}\u{308}\u{1160}", &["\u{D}", "\u{308}", "\u{1160}"]),
-        ("\u{D}\u{11A8}", &["\u{D}", "\u{11A8}"]),
-        ("\u{D}\u{308}\u{11A8}", &["\u{D}", "\u{308}", "\u{11A8}"]),
-        ("\u{D}\u{AC00}", &["\u{D}", "\u{AC00}"]),
-        ("\u{D}\u{308}\u{AC00}", &["\u{D}", "\u{308}", "\u{AC00}"]),
-        ("\u{D}\u{AC01}", &["\u{D}", "\u{AC01}"]),
-        ("\u{D}\u{308}\u{AC01}", &["\u{D}", "\u{308}", "\u{AC01}"]),
-        ("\u{D}\u{1F1E6}", &["\u{D}", "\u{1F1E6}"]),
-        ("\u{D}\u{308}\u{1F1E6}", &["\u{D}", "\u{308}", "\u{1F1E6}"]),
-        ("\u{D}\u{378}", &["\u{D}", "\u{378}"]),
-        ("\u{D}\u{308}\u{378}", &["\u{D}", "\u{308}", "\u{378}"]),
-        ("\u{A}\u{20}", &["\u{A}", "\u{20}"]),
-        ("\u{A}\u{308}\u{20}", &["\u{A}", "\u{308}", "\u{20}"]),
-        ("\u{A}\u{D}", &["\u{A}", "\u{D}"]),
-        ("\u{A}\u{308}\u{D}", &["\u{A}", "\u{308}", "\u{D}"]),
-        ("\u{A}\u{A}", &["\u{A}", "\u{A}"]),
-        ("\u{A}\u{308}\u{A}", &["\u{A}", "\u{308}", "\u{A}"]),
-        ("\u{A}\u{1}", &["\u{A}", "\u{1}"]),
-        ("\u{A}\u{308}\u{1}", &["\u{A}", "\u{308}", "\u{1}"]),
-        ("\u{A}\u{300}", &["\u{A}", "\u{300}"]),
-        ("\u{A}\u{308}\u{300}", &["\u{A}", "\u{308}\u{300}"]),
-        ("\u{A}\u{903}", &["\u{A}", "\u{903}"]),
-        ("\u{A}\u{1100}", &["\u{A}", "\u{1100}"]),
-        ("\u{A}\u{308}\u{1100}", &["\u{A}", "\u{308}", "\u{1100}"]),
-        ("\u{A}\u{1160}", &["\u{A}", "\u{1160}"]),
-        ("\u{A}\u{308}\u{1160}", &["\u{A}", "\u{308}", "\u{1160}"]),
-        ("\u{A}\u{11A8}", &["\u{A}", "\u{11A8}"]),
-        ("\u{A}\u{308}\u{11A8}", &["\u{A}", "\u{308}", "\u{11A8}"]),
-        ("\u{A}\u{AC00}", &["\u{A}", "\u{AC00}"]),
-        ("\u{A}\u{308}\u{AC00}", &["\u{A}", "\u{308}", "\u{AC00}"]),
-        ("\u{A}\u{AC01}", &["\u{A}", "\u{AC01}"]),
-        ("\u{A}\u{308}\u{AC01}", &["\u{A}", "\u{308}", "\u{AC01}"]),
-        ("\u{A}\u{1F1E6}", &["\u{A}", "\u{1F1E6}"]),
-        ("\u{A}\u{308}\u{1F1E6}", &["\u{A}", "\u{308}", "\u{1F1E6}"]),
-        ("\u{A}\u{378}", &["\u{A}", "\u{378}"]),
-        ("\u{A}\u{308}\u{378}", &["\u{A}", "\u{308}", "\u{378}"]),
-        ("\u{1}\u{20}", &["\u{1}", "\u{20}"]),
-        ("\u{1}\u{308}\u{20}", &["\u{1}", "\u{308}", "\u{20}"]),
-        ("\u{1}\u{D}", &["\u{1}", "\u{D}"]),
-        ("\u{1}\u{308}\u{D}", &["\u{1}", "\u{308}", "\u{D}"]),
-        ("\u{1}\u{A}", &["\u{1}", "\u{A}"]),
-        ("\u{1}\u{308}\u{A}", &["\u{1}", "\u{308}", "\u{A}"]),
-        ("\u{1}\u{1}", &["\u{1}", "\u{1}"]),
-        ("\u{1}\u{308}\u{1}", &["\u{1}", "\u{308}", "\u{1}"]),
-        ("\u{1}\u{300}", &["\u{1}", "\u{300}"]),
-        ("\u{1}\u{308}\u{300}", &["\u{1}", "\u{308}\u{300}"]),
-        ("\u{1}\u{903}", &["\u{1}", "\u{903}"]),
-        ("\u{1}\u{1100}", &["\u{1}", "\u{1100}"]),
-        ("\u{1}\u{308}\u{1100}", &["\u{1}", "\u{308}", "\u{1100}"]),
-        ("\u{1}\u{1160}", &["\u{1}", "\u{1160}"]),
-        ("\u{1}\u{308}\u{1160}", &["\u{1}", "\u{308}", "\u{1160}"]),
-        ("\u{1}\u{11A8}", &["\u{1}", "\u{11A8}"]),
-        ("\u{1}\u{308}\u{11A8}", &["\u{1}", "\u{308}", "\u{11A8}"]),
-        ("\u{1}\u{AC00}", &["\u{1}", "\u{AC00}"]),
-        ("\u{1}\u{308}\u{AC00}", &["\u{1}", "\u{308}", "\u{AC00}"]),
-        ("\u{1}\u{AC01}", &["\u{1}", "\u{AC01}"]),
-        ("\u{1}\u{308}\u{AC01}", &["\u{1}", "\u{308}", "\u{AC01}"]),
-        ("\u{1}\u{1F1E6}", &["\u{1}", "\u{1F1E6}"]),
-        ("\u{1}\u{308}\u{1F1E6}", &["\u{1}", "\u{308}", "\u{1F1E6}"]),
-        ("\u{1}\u{378}", &["\u{1}", "\u{378}"]),
-        ("\u{1}\u{308}\u{378}", &["\u{1}", "\u{308}", "\u{378}"]),
-        ("\u{300}\u{20}", &["\u{300}", "\u{20}"]),
-        ("\u{300}\u{308}\u{20}", &["\u{300}\u{308}", "\u{20}"]),
-        ("\u{300}\u{D}", &["\u{300}", "\u{D}"]),
-        ("\u{300}\u{308}\u{D}", &["\u{300}\u{308}", "\u{D}"]),
-        ("\u{300}\u{A}", &["\u{300}", "\u{A}"]),
-        ("\u{300}\u{308}\u{A}", &["\u{300}\u{308}", "\u{A}"]),
-        ("\u{300}\u{1}", &["\u{300}", "\u{1}"]),
-        ("\u{300}\u{308}\u{1}", &["\u{300}\u{308}", "\u{1}"]),
-        ("\u{300}\u{300}", &["\u{300}\u{300}"]),
-        ("\u{300}\u{308}\u{300}", &["\u{300}\u{308}\u{300}"]),
-        ("\u{300}\u{1100}", &["\u{300}", "\u{1100}"]),
-        ("\u{300}\u{308}\u{1100}", &["\u{300}\u{308}", "\u{1100}"]),
-        ("\u{300}\u{1160}", &["\u{300}", "\u{1160}"]),
-        ("\u{300}\u{308}\u{1160}", &["\u{300}\u{308}", "\u{1160}"]),
-        ("\u{300}\u{11A8}", &["\u{300}", "\u{11A8}"]),
-        ("\u{300}\u{308}\u{11A8}", &["\u{300}\u{308}", "\u{11A8}"]),
-        ("\u{300}\u{AC00}", &["\u{300}", "\u{AC00}"]),
-        ("\u{300}\u{308}\u{AC00}", &["\u{300}\u{308}", "\u{AC00}"]),
-        ("\u{300}\u{AC01}", &["\u{300}", "\u{AC01}"]),
-        ("\u{300}\u{308}\u{AC01}", &["\u{300}\u{308}", "\u{AC01}"]),
-        ("\u{300}\u{1F1E6}", &["\u{300}", "\u{1F1E6}"]),
-        ("\u{300}\u{308}\u{1F1E6}", &["\u{300}\u{308}", "\u{1F1E6}"]),
-        ("\u{300}\u{378}", &["\u{300}", "\u{378}"]),
-        ("\u{300}\u{308}\u{378}", &["\u{300}\u{308}", "\u{378}"]),
-        ("\u{903}\u{20}", &["\u{903}", "\u{20}"]),
-        ("\u{903}\u{308}\u{20}", &["\u{903}\u{308}", "\u{20}"]),
-        ("\u{903}\u{D}", &["\u{903}", "\u{D}"]),
-        ("\u{903}\u{308}\u{D}", &["\u{903}\u{308}", "\u{D}"]),
-        ("\u{903}\u{A}", &["\u{903}", "\u{A}"]),
-        ("\u{903}\u{308}\u{A}", &["\u{903}\u{308}", "\u{A}"]),
-        ("\u{903}\u{1}", &["\u{903}", "\u{1}"]),
-        ("\u{903}\u{308}\u{1}", &["\u{903}\u{308}", "\u{1}"]),
-        ("\u{903}\u{300}", &["\u{903}\u{300}"]),
-        ("\u{903}\u{308}\u{300}", &["\u{903}\u{308}\u{300}"]),
-        ("\u{903}\u{1100}", &["\u{903}", "\u{1100}"]),
-        ("\u{903}\u{308}\u{1100}", &["\u{903}\u{308}", "\u{1100}"]),
-        ("\u{903}\u{1160}", &["\u{903}", "\u{1160}"]),
-        ("\u{903}\u{308}\u{1160}", &["\u{903}\u{308}", "\u{1160}"]),
-        ("\u{903}\u{11A8}", &["\u{903}", "\u{11A8}"]),
-        ("\u{903}\u{308}\u{11A8}", &["\u{903}\u{308}", "\u{11A8}"]),
-        ("\u{903}\u{AC00}", &["\u{903}", "\u{AC00}"]),
-        ("\u{903}\u{308}\u{AC00}", &["\u{903}\u{308}", "\u{AC00}"]),
-        ("\u{903}\u{AC01}", &["\u{903}", "\u{AC01}"]),
-        ("\u{903}\u{308}\u{AC01}", &["\u{903}\u{308}", "\u{AC01}"]),
-        ("\u{903}\u{1F1E6}", &["\u{903}", "\u{1F1E6}"]),
-        ("\u{903}\u{308}\u{1F1E6}", &["\u{903}\u{308}", "\u{1F1E6}"]),
-        ("\u{903}\u{378}", &["\u{903}", "\u{378}"]),
-        ("\u{903}\u{308}\u{378}", &["\u{903}\u{308}", "\u{378}"]),
-        ("\u{1100}\u{20}", &["\u{1100}", "\u{20}"]),
-        ("\u{1100}\u{308}\u{20}", &["\u{1100}\u{308}", "\u{20}"]),
-        ("\u{1100}\u{D}", &["\u{1100}", "\u{D}"]),
-        ("\u{1100}\u{308}\u{D}", &["\u{1100}\u{308}", "\u{D}"]),
-        ("\u{1100}\u{A}", &["\u{1100}", "\u{A}"]),
-        ("\u{1100}\u{308}\u{A}", &["\u{1100}\u{308}", "\u{A}"]),
-        ("\u{1100}\u{1}", &["\u{1100}", "\u{1}"]),
-        ("\u{1100}\u{308}\u{1}", &["\u{1100}\u{308}", "\u{1}"]),
-        ("\u{1100}\u{300}", &["\u{1100}\u{300}"]),
-        ("\u{1100}\u{308}\u{300}", &["\u{1100}\u{308}\u{300}"]),
-        ("\u{1100}\u{1100}", &["\u{1100}\u{1100}"]),
-        ("\u{1100}\u{308}\u{1100}", &["\u{1100}\u{308}", "\u{1100}"]),
-        ("\u{1100}\u{1160}", &["\u{1100}\u{1160}"]),
-        ("\u{1100}\u{308}\u{1160}", &["\u{1100}\u{308}", "\u{1160}"]),
-        ("\u{1100}\u{11A8}", &["\u{1100}", "\u{11A8}"]),
-        ("\u{1100}\u{308}\u{11A8}", &["\u{1100}\u{308}", "\u{11A8}"]),
-        ("\u{1100}\u{AC00}", &["\u{1100}\u{AC00}"]),
-        ("\u{1100}\u{308}\u{AC00}", &["\u{1100}\u{308}", "\u{AC00}"]),
-        ("\u{1100}\u{AC01}", &["\u{1100}\u{AC01}"]),
-        ("\u{1100}\u{308}\u{AC01}", &["\u{1100}\u{308}", "\u{AC01}"]),
-        ("\u{1100}\u{1F1E6}", &["\u{1100}", "\u{1F1E6}"]),
-        ("\u{1100}\u{308}\u{1F1E6}", &["\u{1100}\u{308}", "\u{1F1E6}"]),
-        ("\u{1100}\u{378}", &["\u{1100}", "\u{378}"]),
-        ("\u{1100}\u{308}\u{378}", &["\u{1100}\u{308}", "\u{378}"]),
-        ("\u{1160}\u{20}", &["\u{1160}", "\u{20}"]),
-        ("\u{1160}\u{308}\u{20}", &["\u{1160}\u{308}", "\u{20}"]),
-        ("\u{1160}\u{D}", &["\u{1160}", "\u{D}"]),
-        ("\u{1160}\u{308}\u{D}", &["\u{1160}\u{308}", "\u{D}"]),
-        ("\u{1160}\u{A}", &["\u{1160}", "\u{A}"]),
-        ("\u{1160}\u{308}\u{A}", &["\u{1160}\u{308}", "\u{A}"]),
-        ("\u{1160}\u{1}", &["\u{1160}", "\u{1}"]),
-        ("\u{1160}\u{308}\u{1}", &["\u{1160}\u{308}", "\u{1}"]),
-        ("\u{1160}\u{300}", &["\u{1160}\u{300}"]),
-        ("\u{1160}\u{308}\u{300}", &["\u{1160}\u{308}\u{300}"]),
-        ("\u{1160}\u{1100}", &["\u{1160}", "\u{1100}"]),
-        ("\u{1160}\u{308}\u{1100}", &["\u{1160}\u{308}", "\u{1100}"]),
-        ("\u{1160}\u{1160}", &["\u{1160}\u{1160}"]),
-        ("\u{1160}\u{308}\u{1160}", &["\u{1160}\u{308}", "\u{1160}"]),
-        ("\u{1160}\u{11A8}", &["\u{1160}\u{11A8}"]),
-        ("\u{1160}\u{308}\u{11A8}", &["\u{1160}\u{308}", "\u{11A8}"]),
-        ("\u{1160}\u{AC00}", &["\u{1160}", "\u{AC00}"]),
-        ("\u{1160}\u{308}\u{AC00}", &["\u{1160}\u{308}", "\u{AC00}"]),
-        ("\u{1160}\u{AC01}", &["\u{1160}", "\u{AC01}"]),
-        ("\u{1160}\u{308}\u{AC01}", &["\u{1160}\u{308}", "\u{AC01}"]),
-        ("\u{1160}\u{1F1E6}", &["\u{1160}", "\u{1F1E6}"]),
-        ("\u{1160}\u{308}\u{1F1E6}", &["\u{1160}\u{308}", "\u{1F1E6}"]),
-        ("\u{1160}\u{378}", &["\u{1160}", "\u{378}"]),
-        ("\u{1160}\u{308}\u{378}", &["\u{1160}\u{308}", "\u{378}"]),
-        ("\u{11A8}\u{20}", &["\u{11A8}", "\u{20}"]),
-        ("\u{11A8}\u{308}\u{20}", &["\u{11A8}\u{308}", "\u{20}"]),
-        ("\u{11A8}\u{D}", &["\u{11A8}", "\u{D}"]),
-        ("\u{11A8}\u{308}\u{D}", &["\u{11A8}\u{308}", "\u{D}"]),
-        ("\u{11A8}\u{A}", &["\u{11A8}", "\u{A}"]),
-        ("\u{11A8}\u{308}\u{A}", &["\u{11A8}\u{308}", "\u{A}"]),
-        ("\u{11A8}\u{1}", &["\u{11A8}", "\u{1}"]),
-        ("\u{11A8}\u{308}\u{1}", &["\u{11A8}\u{308}", "\u{1}"]),
-        ("\u{11A8}\u{300}", &["\u{11A8}\u{300}"]),
-        ("\u{11A8}\u{308}\u{300}", &["\u{11A8}\u{308}\u{300}"]),
-        ("\u{11A8}\u{1100}", &["\u{11A8}", "\u{1100}"]),
-        ("\u{11A8}\u{308}\u{1100}", &["\u{11A8}\u{308}", "\u{1100}"]),
-        ("\u{11A8}\u{1160}", &["\u{11A8}", "\u{1160}"]),
-        ("\u{11A8}\u{308}\u{1160}", &["\u{11A8}\u{308}", "\u{1160}"]),
-        ("\u{11A8}\u{11A8}", &["\u{11A8}\u{11A8}"]),
-        ("\u{11A8}\u{308}\u{11A8}", &["\u{11A8}\u{308}", "\u{11A8}"]),
-        ("\u{11A8}\u{AC00}", &["\u{11A8}", "\u{AC00}"]),
-        ("\u{11A8}\u{308}\u{AC00}", &["\u{11A8}\u{308}", "\u{AC00}"]),
-        ("\u{11A8}\u{AC01}", &["\u{11A8}", "\u{AC01}"]),
-        ("\u{11A8}\u{308}\u{AC01}", &["\u{11A8}\u{308}", "\u{AC01}"]),
-        ("\u{11A8}\u{1F1E6}", &["\u{11A8}", "\u{1F1E6}"]),
-        ("\u{11A8}\u{308}\u{1F1E6}", &["\u{11A8}\u{308}", "\u{1F1E6}"]),
-        ("\u{11A8}\u{378}", &["\u{11A8}", "\u{378}"]),
-        ("\u{11A8}\u{308}\u{378}", &["\u{11A8}\u{308}", "\u{378}"]),
-        ("\u{AC00}\u{20}", &["\u{AC00}", "\u{20}"]),
-        ("\u{AC00}\u{308}\u{20}", &["\u{AC00}\u{308}", "\u{20}"]),
-        ("\u{AC00}\u{D}", &["\u{AC00}", "\u{D}"]),
-        ("\u{AC00}\u{308}\u{D}", &["\u{AC00}\u{308}", "\u{D}"]),
-        ("\u{AC00}\u{A}", &["\u{AC00}", "\u{A}"]),
-        ("\u{AC00}\u{308}\u{A}", &["\u{AC00}\u{308}", "\u{A}"]),
-        ("\u{AC00}\u{1}", &["\u{AC00}", "\u{1}"]),
-        ("\u{AC00}\u{308}\u{1}", &["\u{AC00}\u{308}", "\u{1}"]),
-        ("\u{AC00}\u{300}", &["\u{AC00}\u{300}"]),
-        ("\u{AC00}\u{308}\u{300}", &["\u{AC00}\u{308}\u{300}"]),
-        ("\u{AC00}\u{1100}", &["\u{AC00}", "\u{1100}"]),
-        ("\u{AC00}\u{308}\u{1100}", &["\u{AC00}\u{308}", "\u{1100}"]),
-        ("\u{AC00}\u{1160}", &["\u{AC00}\u{1160}"]),
-        ("\u{AC00}\u{308}\u{1160}", &["\u{AC00}\u{308}", "\u{1160}"]),
-        ("\u{AC00}\u{11A8}", &["\u{AC00}\u{11A8}"]),
-        ("\u{AC00}\u{308}\u{11A8}", &["\u{AC00}\u{308}", "\u{11A8}"]),
-        ("\u{AC00}\u{AC00}", &["\u{AC00}", "\u{AC00}"]),
-        ("\u{AC00}\u{308}\u{AC00}", &["\u{AC00}\u{308}", "\u{AC00}"]),
-        ("\u{AC00}\u{AC01}", &["\u{AC00}", "\u{AC01}"]),
-        ("\u{AC00}\u{308}\u{AC01}", &["\u{AC00}\u{308}", "\u{AC01}"]),
-        ("\u{AC00}\u{1F1E6}", &["\u{AC00}", "\u{1F1E6}"]),
-        ("\u{AC00}\u{308}\u{1F1E6}", &["\u{AC00}\u{308}", "\u{1F1E6}"]),
-        ("\u{AC00}\u{378}", &["\u{AC00}", "\u{378}"]),
-        ("\u{AC00}\u{308}\u{378}", &["\u{AC00}\u{308}", "\u{378}"]),
-        ("\u{AC01}\u{20}", &["\u{AC01}", "\u{20}"]),
-        ("\u{AC01}\u{308}\u{20}", &["\u{AC01}\u{308}", "\u{20}"]),
-        ("\u{AC01}\u{D}", &["\u{AC01}", "\u{D}"]),
-        ("\u{AC01}\u{308}\u{D}", &["\u{AC01}\u{308}", "\u{D}"]),
-        ("\u{AC01}\u{A}", &["\u{AC01}", "\u{A}"]),
-        ("\u{AC01}\u{308}\u{A}", &["\u{AC01}\u{308}", "\u{A}"]),
-        ("\u{AC01}\u{1}", &["\u{AC01}", "\u{1}"]),
-        ("\u{AC01}\u{308}\u{1}", &["\u{AC01}\u{308}", "\u{1}"]),
-        ("\u{AC01}\u{300}", &["\u{AC01}\u{300}"]),
-        ("\u{AC01}\u{308}\u{300}", &["\u{AC01}\u{308}\u{300}"]),
-        ("\u{AC01}\u{1100}", &["\u{AC01}", "\u{1100}"]),
-        ("\u{AC01}\u{308}\u{1100}", &["\u{AC01}\u{308}", "\u{1100}"]),
-        ("\u{AC01}\u{1160}", &["\u{AC01}", "\u{1160}"]),
-        ("\u{AC01}\u{308}\u{1160}", &["\u{AC01}\u{308}", "\u{1160}"]),
-        ("\u{AC01}\u{11A8}", &["\u{AC01}\u{11A8}"]),
-        ("\u{AC01}\u{308}\u{11A8}", &["\u{AC01}\u{308}", "\u{11A8}"]),
-        ("\u{AC01}\u{AC00}", &["\u{AC01}", "\u{AC00}"]),
-        ("\u{AC01}\u{308}\u{AC00}", &["\u{AC01}\u{308}", "\u{AC00}"]),
-        ("\u{AC01}\u{AC01}", &["\u{AC01}", "\u{AC01}"]),
-        ("\u{AC01}\u{308}\u{AC01}", &["\u{AC01}\u{308}", "\u{AC01}"]),
-        ("\u{AC01}\u{1F1E6}", &["\u{AC01}", "\u{1F1E6}"]),
-        ("\u{AC01}\u{308}\u{1F1E6}", &["\u{AC01}\u{308}", "\u{1F1E6}"]),
-        ("\u{AC01}\u{378}", &["\u{AC01}", "\u{378}"]),
-        ("\u{AC01}\u{308}\u{378}", &["\u{AC01}\u{308}", "\u{378}"]),
-        ("\u{1F1E6}\u{20}", &["\u{1F1E6}", "\u{20}"]),
-        ("\u{1F1E6}\u{308}\u{20}", &["\u{1F1E6}\u{308}", "\u{20}"]),
-        ("\u{1F1E6}\u{D}", &["\u{1F1E6}", "\u{D}"]),
-        ("\u{1F1E6}\u{308}\u{D}", &["\u{1F1E6}\u{308}", "\u{D}"]),
-        ("\u{1F1E6}\u{A}", &["\u{1F1E6}", "\u{A}"]),
-        ("\u{1F1E6}\u{308}\u{A}", &["\u{1F1E6}\u{308}", "\u{A}"]),
-        ("\u{1F1E6}\u{1}", &["\u{1F1E6}", "\u{1}"]),
-        ("\u{1F1E6}\u{308}\u{1}", &["\u{1F1E6}\u{308}", "\u{1}"]),
-        ("\u{1F1E6}\u{300}", &["\u{1F1E6}\u{300}"]),
-        ("\u{1F1E6}\u{308}\u{300}", &["\u{1F1E6}\u{308}\u{300}"]),
-        ("\u{1F1E6}\u{1100}", &["\u{1F1E6}", "\u{1100}"]),
-        ("\u{1F1E6}\u{308}\u{1100}", &["\u{1F1E6}\u{308}", "\u{1100}"]),
-        ("\u{1F1E6}\u{1160}", &["\u{1F1E6}", "\u{1160}"]),
-        ("\u{1F1E6}\u{308}\u{1160}", &["\u{1F1E6}\u{308}", "\u{1160}"]),
-        ("\u{1F1E6}\u{11A8}", &["\u{1F1E6}", "\u{11A8}"]),
-        ("\u{1F1E6}\u{308}\u{11A8}", &["\u{1F1E6}\u{308}", "\u{11A8}"]),
-        ("\u{1F1E6}\u{AC00}", &["\u{1F1E6}", "\u{AC00}"]),
-        ("\u{1F1E6}\u{308}\u{AC00}", &["\u{1F1E6}\u{308}", "\u{AC00}"]),
-        ("\u{1F1E6}\u{AC01}", &["\u{1F1E6}", "\u{AC01}"]),
-        ("\u{1F1E6}\u{308}\u{AC01}", &["\u{1F1E6}\u{308}", "\u{AC01}"]),
-        ("\u{1F1E6}\u{1F1E6}", &["\u{1F1E6}\u{1F1E6}"]),
-        ("\u{1F1E6}\u{308}\u{1F1E6}", &["\u{1F1E6}\u{308}", "\u{1F1E6}"]),
-        ("\u{1F1E6}\u{378}", &["\u{1F1E6}", "\u{378}"]),
-        ("\u{1F1E6}\u{308}\u{378}", &["\u{1F1E6}\u{308}", "\u{378}"]),
-        ("\u{378}\u{20}", &["\u{378}", "\u{20}"]),
-        ("\u{378}\u{308}\u{20}", &["\u{378}\u{308}", "\u{20}"]),
-        ("\u{378}\u{D}", &["\u{378}", "\u{D}"]),
-        ("\u{378}\u{308}\u{D}", &["\u{378}\u{308}", "\u{D}"]),
-        ("\u{378}\u{A}", &["\u{378}", "\u{A}"]),
-        ("\u{378}\u{308}\u{A}", &["\u{378}\u{308}", "\u{A}"]),
-        ("\u{378}\u{1}", &["\u{378}", "\u{1}"]),
-        ("\u{378}\u{308}\u{1}", &["\u{378}\u{308}", "\u{1}"]),
-        ("\u{378}\u{300}", &["\u{378}\u{300}"]),
-        ("\u{378}\u{308}\u{300}", &["\u{378}\u{308}\u{300}"]),
-        ("\u{378}\u{1100}", &["\u{378}", "\u{1100}"]),
-        ("\u{378}\u{308}\u{1100}", &["\u{378}\u{308}", "\u{1100}"]),
-        ("\u{378}\u{1160}", &["\u{378}", "\u{1160}"]),
-        ("\u{378}\u{308}\u{1160}", &["\u{378}\u{308}", "\u{1160}"]),
-        ("\u{378}\u{11A8}", &["\u{378}", "\u{11A8}"]),
-        ("\u{378}\u{308}\u{11A8}", &["\u{378}\u{308}", "\u{11A8}"]),
-        ("\u{378}\u{AC00}", &["\u{378}", "\u{AC00}"]),
-        ("\u{378}\u{308}\u{AC00}", &["\u{378}\u{308}", "\u{AC00}"]),
-        ("\u{378}\u{AC01}", &["\u{378}", "\u{AC01}"]),
-        ("\u{378}\u{308}\u{AC01}", &["\u{378}\u{308}", "\u{AC01}"]),
-        ("\u{378}\u{1F1E6}", &["\u{378}", "\u{1F1E6}"]),
-        ("\u{378}\u{308}\u{1F1E6}", &["\u{378}\u{308}", "\u{1F1E6}"]),
-        ("\u{378}\u{378}", &["\u{378}", "\u{378}"]),
-        ("\u{378}\u{308}\u{378}", &["\u{378}\u{308}", "\u{378}"]),
-        ("\u{61}\u{1F1E6}\u{62}", &["\u{61}", "\u{1F1E6}", "\u{62}"]),
-        ("\u{1F1F7}\u{1F1FA}", &["\u{1F1F7}\u{1F1FA}"]),
-        ("\u{1F1F7}\u{1F1FA}\u{1F1F8}", &["\u{1F1F7}\u{1F1FA}\u{1F1F8}"]),
-        ("\u{1F1F7}\u{1F1FA}\u{1F1F8}\u{1F1EA}",
-        &["\u{1F1F7}\u{1F1FA}\u{1F1F8}\u{1F1EA}"]),
-        ("\u{1F1F7}\u{1F1FA}\u{200B}\u{1F1F8}\u{1F1EA}",
-         &["\u{1F1F7}\u{1F1FA}", "\u{200B}", "\u{1F1F8}\u{1F1EA}"]),
-        ("\u{1F1E6}\u{1F1E7}\u{1F1E8}", &["\u{1F1E6}\u{1F1E7}\u{1F1E8}"]),
-        ("\u{1F1E6}\u{200D}\u{1F1E7}\u{1F1E8}", &["\u{1F1E6}\u{200D}",
-         "\u{1F1E7}\u{1F1E8}"]),
-        ("\u{1F1E6}\u{1F1E7}\u{200D}\u{1F1E8}",
-         &["\u{1F1E6}\u{1F1E7}\u{200D}", "\u{1F1E8}"]),
-        ("\u{20}\u{200D}\u{646}", &["\u{20}\u{200D}", "\u{646}"]),
-        ("\u{646}\u{200D}\u{20}", &["\u{646}\u{200D}", "\u{20}"]),
-    ];
-
-    let test_diff: [(_, &[_], &[_]); 23] = [
-        ("\u{20}\u{903}", &["\u{20}\u{903}"], &["\u{20}", "\u{903}"]), ("\u{20}\u{308}\u{903}",
-        &["\u{20}\u{308}\u{903}"], &["\u{20}\u{308}", "\u{903}"]), ("\u{D}\u{308}\u{903}",
-        &["\u{D}", "\u{308}\u{903}"], &["\u{D}", "\u{308}", "\u{903}"]), ("\u{A}\u{308}\u{903}",
-        &["\u{A}", "\u{308}\u{903}"], &["\u{A}", "\u{308}", "\u{903}"]), ("\u{1}\u{308}\u{903}",
-        &["\u{1}", "\u{308}\u{903}"], &["\u{1}", "\u{308}", "\u{903}"]), ("\u{300}\u{903}",
-        &["\u{300}\u{903}"], &["\u{300}", "\u{903}"]), ("\u{300}\u{308}\u{903}",
-        &["\u{300}\u{308}\u{903}"], &["\u{300}\u{308}", "\u{903}"]), ("\u{903}\u{903}",
-        &["\u{903}\u{903}"], &["\u{903}", "\u{903}"]), ("\u{903}\u{308}\u{903}",
-        &["\u{903}\u{308}\u{903}"], &["\u{903}\u{308}", "\u{903}"]), ("\u{1100}\u{903}",
-        &["\u{1100}\u{903}"], &["\u{1100}", "\u{903}"]), ("\u{1100}\u{308}\u{903}",
-        &["\u{1100}\u{308}\u{903}"], &["\u{1100}\u{308}", "\u{903}"]), ("\u{1160}\u{903}",
-        &["\u{1160}\u{903}"], &["\u{1160}", "\u{903}"]), ("\u{1160}\u{308}\u{903}",
-        &["\u{1160}\u{308}\u{903}"], &["\u{1160}\u{308}", "\u{903}"]), ("\u{11A8}\u{903}",
-        &["\u{11A8}\u{903}"], &["\u{11A8}", "\u{903}"]), ("\u{11A8}\u{308}\u{903}",
-        &["\u{11A8}\u{308}\u{903}"], &["\u{11A8}\u{308}", "\u{903}"]), ("\u{AC00}\u{903}",
-        &["\u{AC00}\u{903}"], &["\u{AC00}", "\u{903}"]), ("\u{AC00}\u{308}\u{903}",
-        &["\u{AC00}\u{308}\u{903}"], &["\u{AC00}\u{308}", "\u{903}"]), ("\u{AC01}\u{903}",
-        &["\u{AC01}\u{903}"], &["\u{AC01}", "\u{903}"]), ("\u{AC01}\u{308}\u{903}",
-        &["\u{AC01}\u{308}\u{903}"], &["\u{AC01}\u{308}", "\u{903}"]), ("\u{1F1E6}\u{903}",
-        &["\u{1F1E6}\u{903}"], &["\u{1F1E6}", "\u{903}"]), ("\u{1F1E6}\u{308}\u{903}",
-        &["\u{1F1E6}\u{308}\u{903}"], &["\u{1F1E6}\u{308}", "\u{903}"]), ("\u{378}\u{903}",
-        &["\u{378}\u{903}"], &["\u{378}", "\u{903}"]), ("\u{378}\u{308}\u{903}",
-        &["\u{378}\u{308}\u{903}"], &["\u{378}\u{308}", "\u{903}"]),
-    ];
-
-    for &(s, g) in &test_same[..] {
-        // test forward iterator
-        assert!(order::equals(s.graphemes(true), g.iter().cloned()));
-        assert!(order::equals(s.graphemes(false), g.iter().cloned()));
-
-        // test reverse iterator
-        assert!(order::equals(s.graphemes(true).rev(), g.iter().rev().cloned()));
-        assert!(order::equals(s.graphemes(false).rev(), g.iter().rev().cloned()));
-    }
-
-    for &(s, gt, gf) in &test_diff {
-        // test forward iterator
-        assert!(order::equals(s.graphemes(true), gt.iter().cloned()));
-        assert!(order::equals(s.graphemes(false), gf.iter().cloned()));
-
-        // test reverse iterator
-        assert!(order::equals(s.graphemes(true).rev(), gt.iter().rev().cloned()));
-        assert!(order::equals(s.graphemes(false).rev(), gf.iter().rev().cloned()));
-    }
-
-    // test the indices iterators
-    let s = "a̐éö̲\r\n";
-    let gr_inds = s.grapheme_indices(true).collect::<Vec<(usize, &str)>>();
-    let b: &[_] = &[(0, "a̐"), (3, "é"), (6, "ö̲"), (11, "\r\n")];
-    assert_eq!(gr_inds, b);
-    let gr_inds = s.grapheme_indices(true).rev().collect::<Vec<(usize, &str)>>();
-    let b: &[_] = &[(11, "\r\n"), (6, "ö̲"), (3, "é"), (0, "a̐")];
-    assert_eq!(gr_inds, b);
-    let mut gr_inds_iter = s.grapheme_indices(true);
-    {
-        let gr_inds = gr_inds_iter.by_ref();
-        let e1 = gr_inds.size_hint();
-        assert_eq!(e1, (1, Some(13)));
-        let c = gr_inds.count();
-        assert_eq!(c, 4);
-    }
-    let e2 = gr_inds_iter.size_hint();
-    assert_eq!(e2, (0, Some(0)));
-
-    // make sure the reverse iterator does the right thing with "\n" at beginning of string
-    let s = "\n\r\n\r";
-    let gr = s.graphemes(true).rev().collect::<Vec<&str>>();
-    let b: &[_] = &["\r", "\r\n", "\n"];
-    assert_eq!(gr, b);
 }
 
 #[test]
@@ -1490,13 +997,10 @@ fn test_str_container() {
         v.iter().map(|x| x.len()).sum()
     }
 
-    let s = String::from_str("01234");
+    let s = "01234";
     assert_eq!(5, sum_len(&["012", "", "34"]));
-    assert_eq!(5, sum_len(&[&String::from_str("01"),
-                            &String::from_str("2"),
-                            &String::from_str("34"),
-                            &String::from_str("")]));
-    assert_eq!(5, sum_len(&[&s]));
+    assert_eq!(5, sum_len(&["01", "2", "34", ""]));
+    assert_eq!(5, sum_len(&[s]));
 }
 
 #[test]
@@ -1523,7 +1027,7 @@ fn test_pattern_deref_forward() {
 fn test_empty_match_indices() {
     let data = "aä中!";
     let vec: Vec<_> = data.match_indices("").collect();
-    assert_eq!(vec, [(0, 0), (1, 1), (3, 3), (6, 6), (7, 7)]);
+    assert_eq!(vec, [(0, ""), (1, ""), (3, ""), (6, ""), (7, "")]);
 }
 
 #[test]
@@ -1687,6 +1191,61 @@ fn trim_ws() {
                "");
 }
 
+#[test]
+fn to_lowercase() {
+    assert_eq!("".to_lowercase(), "");
+    assert_eq!("AÉǅaé ".to_lowercase(), "aéǆaé ");
+
+    // https://github.com/rust-lang/rust/issues/26035
+    assert_eq!("ΑΣ".to_lowercase(), "ας");
+    assert_eq!("Α'Σ".to_lowercase(), "α'ς");
+    assert_eq!("Α''Σ".to_lowercase(), "α''ς");
+
+    assert_eq!("ΑΣ Α".to_lowercase(), "ας α");
+    assert_eq!("Α'Σ Α".to_lowercase(), "α'ς α");
+    assert_eq!("Α''Σ Α".to_lowercase(), "α''ς α");
+
+    assert_eq!("ΑΣ' Α".to_lowercase(), "ας' α");
+    assert_eq!("ΑΣ'' Α".to_lowercase(), "ας'' α");
+
+    assert_eq!("Α'Σ' Α".to_lowercase(), "α'ς' α");
+    assert_eq!("Α''Σ'' Α".to_lowercase(), "α''ς'' α");
+
+    assert_eq!("Α Σ".to_lowercase(), "α σ");
+    assert_eq!("Α 'Σ".to_lowercase(), "α 'σ");
+    assert_eq!("Α ''Σ".to_lowercase(), "α ''σ");
+
+    assert_eq!("Σ".to_lowercase(), "σ");
+    assert_eq!("'Σ".to_lowercase(), "'σ");
+    assert_eq!("''Σ".to_lowercase(), "''σ");
+
+    assert_eq!("ΑΣΑ".to_lowercase(), "ασα");
+    assert_eq!("ΑΣ'Α".to_lowercase(), "ασ'α");
+    assert_eq!("ΑΣ''Α".to_lowercase(), "ασ''α");
+}
+
+#[test]
+fn to_uppercase() {
+    assert_eq!("".to_uppercase(), "");
+    assert_eq!("aéǅßﬁᾀ".to_uppercase(), "AÉǄSSFIἈΙ");
+}
+
+#[test]
+fn test_into_string() {
+    // The only way to acquire a Box<str> in the first place is through a String, so just
+    // test that we can round-trip between Box<str> and String.
+    let string = String::from("Some text goes here");
+    assert_eq!(string.clone().into_boxed_str().into_string(), string);
+}
+
+#[test]
+fn test_box_slice_clone() {
+    let data = String::from("hello HELLO hello HELLO yes YES 5 中ä华!!!");
+    let data2 = data.clone().into_boxed_str().clone().into_string();
+
+    assert_eq!(data, data2);
+}
+
 mod pattern {
     use std::str::pattern::Pattern;
     use std::str::pattern::{Searcher, ReverseSearcher};
@@ -1694,6 +1253,7 @@ mod pattern {
 
     macro_rules! make_test {
         ($name:ident, $p:expr, $h:expr, [$($e:expr,)*]) => {
+            #[allow(unused_imports)]
             mod $name {
                 use std::str::pattern::SearchStep::{Match, Reject};
                 use super::{cmp_search_to_vec};
@@ -1759,6 +1319,14 @@ mod pattern {
         Reject(3, 4),
         Match (4, 6),
         Reject(6, 7),
+    ]);
+    make_test!(str_searcher_ascii_haystack_seq, "bb", "abbcbbbbd", [
+        Reject(0, 1),
+        Match (1, 3),
+        Reject(3, 4),
+        Match (4, 6),
+        Match (6, 8),
+        Reject(8, 9),
     ]);
     make_test!(str_searcher_empty_needle_ascii_haystack, "", "abbcbbd", [
         Match (0, 0),
@@ -1889,7 +1457,7 @@ generate_iterator_test! {
 
 generate_iterator_test! {
     double_ended_match_indices {
-        ("a1b2c3", char::is_numeric) -> [(1, 2), (3, 4), (5, 6)];
+        ("a1b2c3", char::is_numeric) -> [(1, "1"), (3, "2"), (5, "3")];
     }
     with str::match_indices, str::rmatch_indices;
 }
@@ -2013,12 +1581,12 @@ mod bench {
     }
 
     #[bench]
-    fn bench_connect(b: &mut Bencher) {
+    fn bench_join(b: &mut Bencher) {
         let s = "ศไทย中华Việt Nam; Mary had a little lamb, Little lamb";
         let sep = "→";
         let v = vec![s, s, s, s, s, s, s, s, s, s];
         b.iter(|| {
-            assert_eq!(v.connect(sep).len(), s.len() * 10 + sep.len() * 9);
+            assert_eq!(v.join(sep).len(), s.len() * 10 + sep.len() * 9);
         })
     }
 

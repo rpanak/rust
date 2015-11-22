@@ -135,6 +135,8 @@ struct ManyInts {
     struct TwoU8s arg6;
 };
 
+// MSVC doesn't allow empty structs or unions
+#ifndef _MSC_VER
 struct Empty {
 };
 
@@ -148,6 +150,7 @@ rust_dbg_extern_empty_struct(struct ManyInts v1, struct Empty e, struct ManyInts
     assert(v1.arg6.one == v2.arg6.one + 1);
     assert(v1.arg6.two == v2.arg6.two + 1);
 }
+#endif
 
 intptr_t
 rust_get_test_int() {
@@ -191,9 +194,7 @@ rust_dbg_abi_2(struct floats f) {
 }
 
 int
-rust_dbg_static_mut;
-
-int rust_dbg_static_mut = 3;
+rust_dbg_static_mut = 3;
 
 void
 rust_dbg_static_mut_check_four() {
@@ -216,4 +217,8 @@ uint64_t get_y(struct S s) {
 
 uint64_t get_z(struct S s) {
     return s.z;
+}
+
+uint64_t get_c_many_params(void *a, void *b, void *c, void *d, struct quad f) {
+    return f.c;
 }

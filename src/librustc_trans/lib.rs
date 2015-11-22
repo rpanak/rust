@@ -17,28 +17,30 @@
 // Do not remove on snapshot creation. Needed for bootstrap. (Issue #22364)
 #![cfg_attr(stage0, feature(custom_attribute))]
 #![crate_name = "rustc_trans"]
-#![unstable(feature = "rustc_private")]
+#![unstable(feature = "rustc_private", issue = "27812")]
 #![staged_api]
 #![crate_type = "dylib"]
 #![crate_type = "rlib"]
-#![doc(html_logo_url = "http://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
+#![doc(html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
       html_favicon_url = "https://doc.rust-lang.org/favicon.ico",
-      html_root_url = "http://doc.rust-lang.org/nightly/")]
+      html_root_url = "https://doc.rust-lang.org/nightly/")]
 
-#![feature(alloc)]
 #![feature(box_patterns)]
 #![feature(box_syntax)]
-#![feature(collections)]
-#![feature(core)]
+#![feature(const_fn)]
+#![feature(custom_attribute)]
+#![allow(unused_attributes)]
+#![feature(iter_cmp)]
+#![feature(iter_arith)]
 #![feature(libc)]
+#![feature(path_relative_from)]
 #![feature(quote)]
 #![feature(rustc_diagnostic_macros)]
 #![feature(rustc_private)]
+#![feature(slice_patterns)]
 #![feature(staged_api)]
 #![feature(unicode)]
-#![feature(path_ext)]
-#![feature(fs)]
-#![feature(path_relative_from)]
+#![feature(vec_push_all)]
 
 #![allow(trivial_casts)]
 
@@ -49,8 +51,12 @@ extern crate graphviz;
 extern crate libc;
 extern crate rustc;
 extern crate rustc_back;
-extern crate serialize;
+extern crate rustc_data_structures;
+extern crate rustc_front;
 extern crate rustc_llvm as llvm;
+extern crate rustc_mir;
+extern crate rustc_platform_intrinsics as intrinsics;
+extern crate serialize;
 
 #[macro_use] extern crate log;
 #[macro_use] extern crate syntax;
@@ -64,21 +70,18 @@ pub use rustc::util;
 
 pub mod back {
     pub use rustc_back::abi;
-    pub use rustc_back::archive;
-    pub use rustc_back::arm;
-    pub use rustc_back::mips;
-    pub use rustc_back::mipsel;
     pub use rustc_back::rpath;
     pub use rustc_back::svh;
-    pub use rustc_back::target_strs;
-    pub use rustc_back::x86;
-    pub use rustc_back::x86_64;
 
+    pub mod archive;
+    pub mod linker;
     pub mod link;
     pub mod lto;
     pub mod write;
-
+    pub mod msvc;
 }
+
+pub mod diagnostics;
 
 pub mod trans;
 pub mod save;
@@ -86,3 +89,5 @@ pub mod save;
 pub mod lib {
     pub use llvm;
 }
+
+__build_diagnostic_array! { librustc_trans, DIAGNOSTICS }

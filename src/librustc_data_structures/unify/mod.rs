@@ -272,7 +272,7 @@ impl<'tcx,K> UnificationTable<K>
 
 impl<'tcx,K,V> UnificationTable<K>
     where K: UnifyKey<Value=Option<V>>,
-          V: Clone+PartialEq,
+          V: Clone+PartialEq+Debug,
 {
     pub fn unify_var_var(&mut self,
                          a_id: K,
@@ -339,5 +339,11 @@ impl<'tcx,K,V> UnificationTable<K>
     pub fn probe(&mut self, a_id: K) -> Option<V> {
         self.get(a_id).value.clone()
     }
-}
 
+    pub fn unsolved_variables(&mut self) -> Vec<K> {
+        self.values
+            .iter()
+            .filter_map(|vv| if vv.value.is_some() { None } else { Some(vv.key()) })
+            .collect()
+    }
+}

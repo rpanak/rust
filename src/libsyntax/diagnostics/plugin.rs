@@ -10,16 +10,18 @@
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::env;
 
 use ast;
 use ast::{Ident, Name, TokenTree};
 use codemap::Span;
-use diagnostics::metadata::{check_uniqueness, output_metadata, Duplicate};
 use ext::base::{ExtCtxt, MacEager, MacResult};
 use ext::build::AstBuilder;
 use parse::token;
 use ptr::P;
 use util::small_vector::SmallVector;
+
+use diagnostics::metadata::output_metadata;
 
 // Maximum width of any line in an extended error description (inclusive).
 const MAX_DESCRIPTION_WIDTH: usize = 80;
@@ -52,7 +54,7 @@ pub fn expand_diagnostic_used<'cx>(ecx: &'cx mut ExtCtxt,
                                    token_tree: &[TokenTree])
                                    -> Box<MacResult+'cx> {
     let code = match (token_tree.len(), token_tree.get(0)) {
-        (1, Some(&ast::TtToken(_, token::Ident(code, _)))) => code,
+        (1, Some(&TokenTree::Token(_, token::Ident(code, _)))) => code,
         _ => unreachable!()
     };
 
@@ -61,7 +63,7 @@ pub fn expand_diagnostic_used<'cx>(ecx: &'cx mut ExtCtxt,
             // Previously used errors.
             Some(&mut ErrorInfo { description: _, use_site: Some(previous_span) }) => {
                 ecx.span_warn(span, &format!(
-                    "diagnostic code {} already used", &token::get_ident(code)
+                    "diagnostic code {} already used", code
                 ));
                 ecx.span_note(previous_span, "previous invocation");
             }
@@ -72,7 +74,7 @@ pub fn expand_diagnostic_used<'cx>(ecx: &'cx mut ExtCtxt,
             // Unregistered errors.
             None => {
                 ecx.span_err(span, &format!(
-                    "used diagnostic code {} not registered", &token::get_ident(code)
+                    "used diagnostic code {} not registered", code
                 ));
             }
         }
@@ -90,16 +92,17 @@ pub fn expand_register_diagnostic<'cx>(ecx: &'cx mut ExtCtxt,
         token_tree.get(1),
         token_tree.get(2)
     ) {
-        (1, Some(&ast::TtToken(_, token::Ident(ref code, _))), None, None) => {
+        (1, Some(&TokenTree::Token(_, token::Ident(ref code, _))), None, None) => {
             (code, None)
         },
-        (3, Some(&ast::TtToken(_, token::Ident(ref code, _))),
-            Some(&ast::TtToken(_, token::Comma)),
-            Some(&ast::TtToken(_, token::Literal(token::StrRaw(description, _), None)))) => {
+        (3, Some(&TokenTree::Token(_, token::Ident(ref code, _))),
+            Some(&TokenTree::Token(_, token::Comma)),
+            Some(&TokenTree::Token(_, token::Literal(token::StrRaw(description, _), None)))) => {
             (code, Some(description))
         }
         _ => unreachable!()
     };
+
     // Check that the description starts and ends with a newline and doesn't
     // overflow the maximum line width.
     description.map(|raw_msg| {
@@ -107,13 +110,19 @@ pub fn expand_register_diagnostic<'cx>(ecx: &'cx mut ExtCtxt,
         if !msg.starts_with("\n") || !msg.ends_with("\n") {
             ecx.span_err(span, &format!(
                 "description for error code {} doesn't start and end with a newline",
-                token::get_ident(*code)
+                code
             ));
         }
-        if msg.lines().any(|line| line.len() > MAX_DESCRIPTION_WIDTH) {
+
+        // URLs can be unavoidably longer than the line limit, so we allow them.
+        // Allowed format is: `[name]: https://www.rust-lang.org/`
+        let is_url = |l: &str| l.starts_with('[') && l.contains("]:") && l.contains("http");
+
+        if msg.lines().any(|line| line.len() > MAX_DESCRIPTION_WIDTH && !is_url(line)) {
             ecx.span_err(span, &format!(
-                "description for error code {} contains a line longer than {} characters",
-                token::get_ident(*code), MAX_DESCRIPTION_WIDTH
+                "description for error code {} contains a line longer than {} characters.\n\
+                 if you're inserting a long URL use the footnote style to bypass this check.",
+                code, MAX_DESCRIPTION_WIDTH
             ));
         }
     });
@@ -125,12 +134,12 @@ pub fn expand_register_diagnostic<'cx>(ecx: &'cx mut ExtCtxt,
         };
         if diagnostics.insert(code.name, info).is_some() {
             ecx.span_err(span, &format!(
-                "diagnostic code {} already registered", &token::get_ident(*code)
+                "diagnostic code {} already registered", code
             ));
         }
     });
-    let sym = Ident::new(token::gensym(&(
-        "__register_diagnostic_".to_string() + &token::get_ident(*code)
+    let sym = Ident::with_empty_ctxt(token::gensym(&format!(
+        "__register_diagnostic_{}", code
     )));
     MacEager::items(SmallVector::many(vec![
         ecx.item_mod(
@@ -151,27 +160,27 @@ pub fn expand_build_diagnostic_array<'cx>(ecx: &'cx mut ExtCtxt,
     let (crate_name, name) = match (&token_tree[0], &token_tree[2]) {
         (
             // Crate name.
-            &ast::TtToken(_, token::Ident(ref crate_name, _)),
+            &TokenTree::Token(_, token::Ident(ref crate_name, _)),
             // DIAGNOSTICS ident.
-            &ast::TtToken(_, token::Ident(ref name, _))
-        ) => (crate_name.as_str(), name),
+            &TokenTree::Token(_, token::Ident(ref name, _))
+        ) => (*&crate_name, name),
         _ => unreachable!()
     };
 
-    // Check uniqueness of errors and output metadata.
-    with_registered_diagnostics(|diagnostics| {
-        match check_uniqueness(crate_name, &*diagnostics) {
-            Ok(Duplicate(err, location)) => {
-                ecx.span_err(span, &format!(
-                    "error {} from `{}' also found in `{}'",
-                    err, crate_name, location
-                ));
-            },
-            Ok(_) => (),
-            Err(e) => panic!("{}", e.description())
-        }
+    // Output error metadata to `tmp/extended-errors/<target arch>/<crate name>.json`
+    let target_triple = env::var("CFG_COMPILER_HOST_TRIPLE")
+        .ok().expect("unable to determine target arch from $CFG_COMPILER_HOST_TRIPLE");
 
-        output_metadata(&*ecx, crate_name, &*diagnostics).ok().expect("metadata output error");
+    with_registered_diagnostics(|diagnostics| {
+        if let Err(e) = output_metadata(ecx,
+                                        &target_triple,
+                                        &crate_name.name.as_str(),
+                                        &diagnostics) {
+            ecx.span_bug(span, &format!(
+                "error writing metadata for triple `{}` and crate `{}`, error: {}, cause: {:?}",
+                target_triple, crate_name, e.description(), e.cause()
+            ));
+        }
     });
 
     // Construct the output expression.
@@ -181,8 +190,8 @@ pub fn expand_build_diagnostic_array<'cx>(ecx: &'cx mut ExtCtxt,
                 diagnostics.iter().filter_map(|(code, info)| {
                     info.description.map(|description| {
                         ecx.expr_tuple(span, vec![
-                            ecx.expr_str(span, token::get_name(*code)),
-                            ecx.expr_str(span, token::get_name(description))
+                            ecx.expr_str(span, code.as_str()),
+                            ecx.expr_str(span, description.as_str())
                         ])
                     })
                 }).collect();
@@ -213,9 +222,8 @@ pub fn expand_build_diagnostic_array<'cx>(ecx: &'cx mut ExtCtxt,
             ident: name.clone(),
             attrs: Vec::new(),
             id: ast::DUMMY_NODE_ID,
-            node: ast::ItemStatic(
+            node: ast::ItemConst(
                 ty,
-                ast::MutImmutable,
                 expr,
             ),
             vis: ast::Public,

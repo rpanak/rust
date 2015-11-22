@@ -14,13 +14,12 @@
 use super::{CombinedSnapshot, InferCtxt, HigherRankedType, SkolemizationMap};
 use super::combine::CombineFields;
 
-use middle::subst;
 use middle::ty::{self, Binder};
-use middle::ty_fold::{self, TypeFoldable};
-use middle::ty_relate::{Relate, RelateResult, TypeRelation};
+use middle::ty::error::TypeError;
+use middle::ty::fold::TypeFoldable;
+use middle::ty::relate::{Relate, RelateResult, TypeRelation};
 use syntax::codemap::Span;
 use util::nodemap::{FnvHashMap, FnvHashSet};
-use util::ppaux::Repr;
 
 pub trait HigherRankedRelations<'a,'tcx> {
     fn higher_ranked_sub<T>(&self, a: &Binder<T>, b: &Binder<T>) -> RelateResult<'tcx, Binder<T>>
@@ -46,10 +45,8 @@ impl<'a,'tcx> HigherRankedRelations<'a,'tcx> for CombineFields<'a,'tcx> {
                             -> RelateResult<'tcx, Binder<T>>
         where T: Relate<'a,'tcx>
     {
-        let tcx = self.infcx.tcx;
-
-        debug!("higher_ranked_sub(a={}, b={})",
-               a.repr(tcx), b.repr(tcx));
+        debug!("higher_ranked_sub(a={:?}, b={:?})",
+               a, b);
 
         // Rather than checking the subtype relationship between `a` and `b`
         // as-is, we need to do some extra work here in order to make sure
@@ -75,8 +72,8 @@ impl<'a,'tcx> HigherRankedRelations<'a,'tcx> for CombineFields<'a,'tcx> {
             let (b_prime, skol_map) =
                 self.infcx.skolemize_late_bound_regions(b, snapshot);
 
-            debug!("a_prime={}", a_prime.repr(tcx));
-            debug!("b_prime={}", b_prime.repr(tcx));
+            debug!("a_prime={:?}", a_prime);
+            debug!("b_prime={:?}", b_prime);
 
             // Compare types now that bound regions have been replaced.
             let result = try!(self.sub().relate(&a_prime, &b_prime));
@@ -88,18 +85,18 @@ impl<'a,'tcx> HigherRankedRelations<'a,'tcx> for CombineFields<'a,'tcx> {
                 Err((skol_br, tainted_region)) => {
                     if self.a_is_expected {
                         debug!("Not as polymorphic!");
-                        return Err(ty::terr_regions_insufficiently_polymorphic(skol_br,
+                        return Err(TypeError::RegionsInsufficientlyPolymorphic(skol_br,
                                                                                tainted_region));
                     } else {
                         debug!("Overly polymorphic!");
-                        return Err(ty::terr_regions_overly_polymorphic(skol_br,
+                        return Err(TypeError::RegionsOverlyPolymorphic(skol_br,
                                                                        tainted_region));
                     }
                 }
             }
 
-            debug!("higher_ranked_sub: OK result={}",
-                   result.repr(tcx));
+            debug!("higher_ranked_sub: OK result={:?}",
+                   result);
 
             Ok(ty::Binder(result))
         });
@@ -125,7 +122,7 @@ impl<'a,'tcx> HigherRankedRelations<'a,'tcx> for CombineFields<'a,'tcx> {
                 try!(self.lub().relate(&a_with_fresh, &b_with_fresh));
             let result0 =
                 self.infcx.resolve_type_vars_if_possible(&result0);
-            debug!("lub result0 = {}", result0.repr(self.tcx()));
+            debug!("lub result0 = {:?}", result0);
 
             // Generalize the regions appearing in result0 if possible
             let new_vars = self.infcx.region_vars_confined_to_snapshot(snapshot);
@@ -137,10 +134,10 @@ impl<'a,'tcx> HigherRankedRelations<'a,'tcx> for CombineFields<'a,'tcx> {
                     |r, debruijn| generalize_region(self.infcx, span, snapshot, debruijn,
                                                     &new_vars, &a_map, r));
 
-            debug!("lub({},{}) = {}",
-                   a.repr(self.tcx()),
-                   b.repr(self.tcx()),
-                   result1.repr(self.tcx()));
+            debug!("lub({:?},{:?}) = {:?}",
+                   a,
+                   b,
+                   result1);
 
             Ok(ty::Binder(result1))
         });
@@ -198,8 +195,8 @@ impl<'a,'tcx> HigherRankedRelations<'a,'tcx> for CombineFields<'a,'tcx> {
     fn higher_ranked_glb<T>(&self, a: &Binder<T>, b: &Binder<T>) -> RelateResult<'tcx, Binder<T>>
         where T: Relate<'a,'tcx>
     {
-        debug!("higher_ranked_glb({}, {})",
-               a.repr(self.tcx()), b.repr(self.tcx()));
+        debug!("higher_ranked_glb({:?}, {:?})",
+               a, b);
 
         // Make a snapshot so we can examine "all bindings that were
         // created as part of this type comparison".
@@ -219,7 +216,7 @@ impl<'a,'tcx> HigherRankedRelations<'a,'tcx> for CombineFields<'a,'tcx> {
                 try!(self.glb().relate(&a_with_fresh, &b_with_fresh));
             let result0 =
                 self.infcx.resolve_type_vars_if_possible(&result0);
-            debug!("glb result0 = {}", result0.repr(self.tcx()));
+            debug!("glb result0 = {:?}", result0);
 
             // Generalize the regions appearing in result0 if possible
             let new_vars = self.infcx.region_vars_confined_to_snapshot(snapshot);
@@ -233,10 +230,10 @@ impl<'a,'tcx> HigherRankedRelations<'a,'tcx> for CombineFields<'a,'tcx> {
                                                     &a_map, &a_vars, &b_vars,
                                                     r));
 
-            debug!("glb({},{}) = {}",
-                   a.repr(self.tcx()),
-                   b.repr(self.tcx()),
-                   result1.repr(self.tcx()));
+            debug!("glb({:?},{:?}) = {:?}",
+                   a,
+                   b,
+                   result1);
 
             Ok(ty::Binder(result1))
         });
@@ -338,7 +335,7 @@ fn var_ids<'a, 'tcx>(fields: &CombineFields<'a, 'tcx>,
                      -> Vec<ty::RegionVid> {
     map.iter()
        .map(|(_, r)| match *r {
-           ty::ReInfer(ty::ReVar(r)) => { r }
+           ty::ReVar(r) => { r }
            r => {
                fields.tcx().sess.span_bug(
                    fields.trace.origin.span(),
@@ -350,7 +347,7 @@ fn var_ids<'a, 'tcx>(fields: &CombineFields<'a, 'tcx>,
 
 fn is_var_in_set(new_vars: &[ty::RegionVid], r: ty::Region) -> bool {
     match r {
-        ty::ReInfer(ty::ReVar(ref v)) => new_vars.iter().any(|x| x == v),
+        ty::ReVar(ref v) => new_vars.iter().any(|x| x == v),
         _ => false
     }
 }
@@ -362,7 +359,7 @@ fn fold_regions_in<'tcx, T, F>(tcx: &ty::ctxt<'tcx>,
     where T: TypeFoldable<'tcx>,
           F: FnMut(ty::Region, ty::DebruijnIndex) -> ty::Region,
 {
-    unbound_value.fold_with(&mut ty_fold::RegionFolder::new(tcx, &mut |region, current_depth| {
+    tcx.fold_regions(unbound_value, &mut false, |region, current_depth| {
         // we should only be encountering "escaping" late-bound regions here,
         // because the ones at the current level should have been replaced
         // with fresh variables
@@ -372,7 +369,7 @@ fn fold_regions_in<'tcx, T, F>(tcx: &ty::ctxt<'tcx>,
         });
 
         fldr(region, ty::DebruijnIndex::new(current_depth))
-    }))
+    })
 }
 
 impl<'a,'tcx> InferCtxtExt for InferCtxt<'a,'tcx> {
@@ -440,79 +437,21 @@ impl<'a,'tcx> InferCtxtExt for InferCtxt<'a,'tcx> {
         let escaping_types =
             self.type_variables.borrow().types_escaping_snapshot(&snapshot.type_snapshot);
 
-        let escaping_region_vars: FnvHashSet<_> =
-            escaping_types
-            .iter()
-            .flat_map(|&t| ty_fold::collect_regions(self.tcx, &t).into_iter())
-            .collect();
+        let mut escaping_region_vars = FnvHashSet();
+        for ty in &escaping_types {
+            self.tcx.collect_regions(ty, &mut escaping_region_vars);
+        }
 
         region_vars.retain(|&region_vid| {
-            let r = ty::ReInfer(ty::ReVar(region_vid));
+            let r = ty::ReVar(region_vid);
             !escaping_region_vars.contains(&r)
         });
 
-        debug!("region_vars_confined_to_snapshot: region_vars={} escaping_types={}",
-               region_vars.repr(self.tcx),
-               escaping_types.repr(self.tcx));
+        debug!("region_vars_confined_to_snapshot: region_vars={:?} escaping_types={:?}",
+               region_vars,
+               escaping_types);
 
         region_vars
-    }
-}
-
-/// Constructs and returns a substitution that, for a given type
-/// scheme parameterized by `generics`, will replace every generic
-/// parameter in the type with a skolemized type/region (which one can
-/// think of as a "fresh constant", except at the type/region level of
-/// reasoning).
-///
-/// Since we currently represent bound/free type parameters in the
-/// same way, this only has an effect on regions.
-///
-/// (Note that unlike a substitution from `ty::construct_free_substs`,
-/// this inserts skolemized regions rather than free regions; this
-/// allows one to use `fn leak_check` to catch attmepts to unify the
-/// skolemized regions with e.g. the `'static` lifetime)
-pub fn construct_skolemized_substs<'a,'tcx>(infcx: &InferCtxt<'a,'tcx>,
-                                            generics: &ty::Generics<'tcx>,
-                                            snapshot: &CombinedSnapshot)
-                                            -> (subst::Substs<'tcx>, SkolemizationMap)
-{
-    let mut map = FnvHashMap();
-
-    // map T => T
-    let mut types = subst::VecPerParamSpace::empty();
-    push_types_from_defs(infcx.tcx, &mut types, generics.types.as_slice());
-
-    // map early- or late-bound 'a => fresh 'a
-    let mut regions = subst::VecPerParamSpace::empty();
-    push_region_params(infcx, &mut map, &mut regions, generics.regions.as_slice(), snapshot);
-
-    let substs = subst::Substs { types: types,
-                                 regions: subst::NonerasedRegions(regions) };
-    return (substs, map);
-
-    fn push_region_params<'a,'tcx>(infcx: &InferCtxt<'a,'tcx>,
-                                   map: &mut SkolemizationMap,
-                                   regions: &mut subst::VecPerParamSpace<ty::Region>,
-                                   region_params: &[ty::RegionParameterDef],
-                                   snapshot: &CombinedSnapshot)
-    {
-        for r in region_params {
-            let br = r.to_bound_region();
-            let skol_var = infcx.region_vars.new_skolemized(br, &snapshot.region_vars_snapshot);
-            let sanity_check = map.insert(br, skol_var);
-            assert!(sanity_check.is_none());
-            regions.push(r.space, skol_var);
-        }
-    }
-
-    fn push_types_from_defs<'tcx>(tcx: &ty::ctxt<'tcx>,
-                                  types: &mut subst::VecPerParamSpace<ty::Ty<'tcx>>,
-                                  defs: &[ty::TypeParameterDef<'tcx>]) {
-        for def in defs {
-            let ty = ty::mk_param_from_def(tcx, def);
-            types.push(def.space, ty);
-        }
     }
 }
 
@@ -520,7 +459,7 @@ pub fn skolemize_late_bound_regions<'a,'tcx,T>(infcx: &InferCtxt<'a,'tcx>,
                                                binder: &ty::Binder<T>,
                                                snapshot: &CombinedSnapshot)
                                                -> (T, SkolemizationMap)
-    where T : TypeFoldable<'tcx> + Repr<'tcx>
+    where T : TypeFoldable<'tcx>
 {
     /*!
      * Replace all regions bound by `binder` with skolemized regions and
@@ -530,14 +469,14 @@ pub fn skolemize_late_bound_regions<'a,'tcx,T>(infcx: &InferCtxt<'a,'tcx>,
      * details.
      */
 
-    let (result, map) = ty::replace_late_bound_regions(infcx.tcx, binder, |br| {
+    let (result, map) = infcx.tcx.replace_late_bound_regions(binder, |br| {
         infcx.region_vars.new_skolemized(br, &snapshot.region_vars_snapshot)
     });
 
-    debug!("skolemize_bound_regions(binder={}, result={}, map={})",
-           binder.repr(infcx.tcx),
-           result.repr(infcx.tcx),
-           map.repr(infcx.tcx));
+    debug!("skolemize_bound_regions(binder={:?}, result={:?}, map={:?})",
+           binder,
+           result,
+           map);
 
     (result, map)
 }
@@ -555,8 +494,8 @@ pub fn leak_check<'a,'tcx>(infcx: &InferCtxt<'a,'tcx>,
      * hold. See `README.md` for more details.
      */
 
-    debug!("leak_check: skol_map={}",
-           skol_map.repr(infcx.tcx));
+    debug!("leak_check: skol_map={:?}",
+           skol_map);
 
     let new_vars = infcx.region_vars_confined_to_snapshot(snapshot);
     for (&skol_br, &skol) in skol_map {
@@ -565,7 +504,7 @@ pub fn leak_check<'a,'tcx>(infcx: &InferCtxt<'a,'tcx>,
             // Each skolemized should only be relatable to itself
             // or new variables:
             match tainted_region {
-                ty::ReInfer(ty::ReVar(vid)) => {
+                ty::ReVar(vid) => {
                     if new_vars.iter().any(|&x| x == vid) { continue; }
                 }
                 _ => {
@@ -573,10 +512,10 @@ pub fn leak_check<'a,'tcx>(infcx: &InferCtxt<'a,'tcx>,
                 }
             };
 
-            debug!("{} (which replaced {}) is tainted by {}",
-                   skol.repr(infcx.tcx),
-                   skol_br.repr(infcx.tcx),
-                   tainted_region.repr(infcx.tcx));
+            debug!("{:?} (which replaced {:?}) is tainted by {:?}",
+                   skol,
+                   skol_br,
+                   tainted_region);
 
             // A is not as polymorphic as B:
             return Err((skol_br, tainted_region));
@@ -618,17 +557,17 @@ pub fn plug_leaks<'a,'tcx,T>(infcx: &InferCtxt<'a,'tcx>,
                              snapshot: &CombinedSnapshot,
                              value: &T)
                              -> T
-    where T : TypeFoldable<'tcx> + Repr<'tcx>
+    where T : TypeFoldable<'tcx> + ty::HasTypeFlags
 {
     debug_assert!(leak_check(infcx, &skol_map, snapshot).is_ok());
 
-    debug!("plug_leaks(skol_map={}, value={})",
-           skol_map.repr(infcx.tcx),
-           value.repr(infcx.tcx));
+    debug!("plug_leaks(skol_map={:?}, value={:?})",
+           skol_map,
+           value);
 
     // Compute a mapping from the "taint set" of each skolemized
     // region back to the `ty::BoundRegion` that it originally
-    // represented. Because `leak_check` passed, we know that that
+    // represented. Because `leak_check` passed, we know that
     // these taint sets are mutually disjoint.
     let inv_skol_map: FnvHashMap<ty::Region, ty::BoundRegion> =
         skol_map
@@ -640,8 +579,8 @@ pub fn plug_leaks<'a,'tcx,T>(infcx: &InferCtxt<'a,'tcx>,
         })
         .collect();
 
-    debug!("plug_leaks: inv_skol_map={}",
-           inv_skol_map.repr(infcx.tcx));
+    debug!("plug_leaks: inv_skol_map={:?}",
+           inv_skol_map);
 
     // Remove any instantiated type variables from `value`; those can hide
     // references to regions from the `fold_regions` code below.
@@ -652,7 +591,7 @@ pub fn plug_leaks<'a,'tcx,T>(infcx: &InferCtxt<'a,'tcx>,
     // binder is that we encountered in `value`. The caller is
     // responsible for ensuring that (a) `value` contains at least one
     // binder and (b) that binder is the one we want to use.
-    let result = ty_fold::fold_regions(infcx.tcx, &value, |r, current_depth| {
+    let result = infcx.tcx.fold_regions(&value, &mut false, |r, current_depth| {
         match inv_skol_map.get(&r) {
             None => r,
             Some(br) => {
@@ -669,8 +608,8 @@ pub fn plug_leaks<'a,'tcx,T>(infcx: &InferCtxt<'a,'tcx>,
         }
     });
 
-    debug!("plug_leaks: result={}",
-           result.repr(infcx.tcx));
+    debug!("plug_leaks: result={:?}",
+           result);
 
     result
 }

@@ -15,8 +15,7 @@ use super::lattice::{self, LatticeDir};
 use super::Subtype;
 
 use middle::ty::{self, Ty};
-use middle::ty_relate::{Relate, RelateResult, TypeRelation};
-use util::ppaux::Repr;
+use middle::ty::relate::{Relate, RelateResult, TypeRelation};
 
 /// "Greatest lower bound" (common subtype)
 pub struct Glb<'a, 'tcx: 'a> {
@@ -55,10 +54,10 @@ impl<'a, 'tcx> TypeRelation<'a, 'tcx> for Glb<'a, 'tcx> {
     }
 
     fn regions(&mut self, a: ty::Region, b: ty::Region) -> RelateResult<'tcx, ty::Region> {
-        debug!("{}.regions({}, {})",
+        debug!("{}.regions({:?}, {:?})",
                self.tag(),
-               a.repr(self.fields.infcx.tcx),
-               b.repr(self.fields.infcx.tcx));
+               a,
+               b);
 
         let origin = Subtype(self.fields.trace.clone());
         Ok(self.fields.infcx.region_vars.glb_regions(origin, a, b))

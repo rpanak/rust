@@ -21,12 +21,14 @@ use self::UseError::*;
 use borrowck::*;
 use borrowck::InteriorKind::{InteriorElement, InteriorField};
 use rustc::middle::expr_use_visitor as euv;
+use rustc::middle::infer;
 use rustc::middle::mem_categorization as mc;
+use rustc::middle::mem_categorization::Categorization;
 use rustc::middle::region;
 use rustc::middle::ty;
-use rustc::util::ppaux::Repr;
 use syntax::ast;
 use syntax::codemap::Span;
+use rustc_front::hir;
 
 use std::rc::Rc;
 
@@ -86,7 +88,7 @@ fn owned_ptr_base_path_rc<'tcx>(loan_path: &Rc<LoanPath<'tcx>>) -> Rc<LoanPath<'
 struct CheckLoanCtxt<'a, 'tcx: 'a> {
     bccx: &'a BorrowckCtxt<'a, 'tcx>,
     dfcx_loans: &'a LoanDataFlow<'a, 'tcx>,
-    move_data: move_data::FlowedMoveData<'a, 'tcx>,
+    move_data: &'a move_data::FlowedMoveData<'a, 'tcx>,
     all_loans: &'a [Loan<'tcx>],
     param_env: &'a ty::ParameterEnvironment<'a, 'tcx>,
 }
@@ -97,24 +99,24 @@ impl<'a, 'tcx> euv::Delegate<'tcx> for CheckLoanCtxt<'a, 'tcx> {
                consume_span: Span,
                cmt: mc::cmt<'tcx>,
                mode: euv::ConsumeMode) {
-        debug!("consume(consume_id={}, cmt={}, mode={:?})",
-               consume_id, cmt.repr(self.tcx()), mode);
+        debug!("consume(consume_id={}, cmt={:?}, mode={:?})",
+               consume_id, cmt, mode);
 
         self.consume_common(consume_id, consume_span, cmt, mode);
     }
 
     fn matched_pat(&mut self,
-                   _matched_pat: &ast::Pat,
+                   _matched_pat: &hir::Pat,
                    _cmt: mc::cmt,
                    _mode: euv::MatchMode) { }
 
     fn consume_pat(&mut self,
-                   consume_pat: &ast::Pat,
+                   consume_pat: &hir::Pat,
                    cmt: mc::cmt<'tcx>,
                    mode: euv::ConsumeMode) {
-        debug!("consume_pat(consume_pat={}, cmt={}, mode={:?})",
-               consume_pat.repr(self.tcx()),
-               cmt.repr(self.tcx()),
+        debug!("consume_pat(consume_pat={:?}, cmt={:?}, mode={:?})",
+               consume_pat,
+               cmt,
                mode);
 
         self.consume_common(consume_pat.id, consume_pat.span, cmt, mode);
@@ -128,9 +130,9 @@ impl<'a, 'tcx> euv::Delegate<'tcx> for CheckLoanCtxt<'a, 'tcx> {
               bk: ty::BorrowKind,
               loan_cause: euv::LoanCause)
     {
-        debug!("borrow(borrow_id={}, cmt={}, loan_region={:?}, \
+        debug!("borrow(borrow_id={}, cmt={:?}, loan_region={:?}, \
                bk={:?}, loan_cause={:?})",
-               borrow_id, cmt.repr(self.tcx()), loan_region,
+               borrow_id, cmt, loan_region,
                bk, loan_cause);
 
         match opt_loan_path(&cmt) {
@@ -144,7 +146,7 @@ impl<'a, 'tcx> euv::Delegate<'tcx> for CheckLoanCtxt<'a, 'tcx> {
             None => { }
         }
 
-        self.check_for_conflicting_loans(region::CodeExtent::from_node_id(borrow_id));
+        self.check_for_conflicting_loans(borrow_id);
     }
 
     fn mutate(&mut self,
@@ -153,8 +155,8 @@ impl<'a, 'tcx> euv::Delegate<'tcx> for CheckLoanCtxt<'a, 'tcx> {
               assignee_cmt: mc::cmt<'tcx>,
               mode: euv::MutateMode)
     {
-        debug!("mutate(assignment_id={}, assignee_cmt={})",
-               assignment_id, assignee_cmt.repr(self.tcx()));
+        debug!("mutate(assignment_id={}, assignee_cmt={:?})",
+               assignment_id, assignee_cmt);
 
         match opt_loan_path(&assignee_cmt) {
             Some(lp) => {
@@ -183,7 +185,7 @@ impl<'a, 'tcx> euv::Delegate<'tcx> for CheckLoanCtxt<'a, 'tcx> {
             None => { }
         }
 
-        self.check_assignment(assignment_id, assignment_span, assignee_cmt, mode);
+        self.check_assignment(assignment_id, assignment_span, assignee_cmt);
     }
 
     fn decl_without_init(&mut self, _id: ast::NodeId, _span: Span) { }
@@ -191,25 +193,26 @@ impl<'a, 'tcx> euv::Delegate<'tcx> for CheckLoanCtxt<'a, 'tcx> {
 
 pub fn check_loans<'a, 'b, 'c, 'tcx>(bccx: &BorrowckCtxt<'a, 'tcx>,
                                      dfcx_loans: &LoanDataFlow<'b, 'tcx>,
-                                     move_data: move_data::FlowedMoveData<'c, 'tcx>,
+                                     move_data: &move_data::FlowedMoveData<'c, 'tcx>,
                                      all_loans: &[Loan<'tcx>],
                                      fn_id: ast::NodeId,
-                                     decl: &ast::FnDecl,
-                                     body: &ast::Block) {
+                                     decl: &hir::FnDecl,
+                                     body: &hir::Block) {
     debug!("check_loans(body id={})", body.id);
 
     let param_env = ty::ParameterEnvironment::for_item(bccx.tcx, fn_id);
+    let infcx = infer::new_infer_ctxt(bccx.tcx, &bccx.tcx.tables, Some(param_env), false);
 
     let mut clcx = CheckLoanCtxt {
         bccx: bccx,
         dfcx_loans: dfcx_loans,
         move_data: move_data,
         all_loans: all_loans,
-        param_env: &param_env,
+        param_env: &infcx.parameter_environment
     };
 
     {
-        let mut euv = euv::ExprUseVisitor::new(&mut clcx, &param_env);
+        let mut euv = euv::ExprUseVisitor::new(&mut clcx, &infcx);
         euv.walk_fn(decl, body);
     }
 }
@@ -229,16 +232,16 @@ fn compatible_borrow_kinds(borrow_kind1: ty::BorrowKind,
 impl<'a, 'tcx> CheckLoanCtxt<'a, 'tcx> {
     pub fn tcx(&self) -> &'a ty::ctxt<'tcx> { self.bccx.tcx }
 
-    pub fn each_issued_loan<F>(&self, scope: region::CodeExtent, mut op: F) -> bool where
+    pub fn each_issued_loan<F>(&self, node: ast::NodeId, mut op: F) -> bool where
         F: FnMut(&Loan<'tcx>) -> bool,
     {
         //! Iterates over each loan that has been issued
-        //! on entrance to `scope`, regardless of whether it is
+        //! on entrance to `node`, regardless of whether it is
         //! actually *in scope* at that point.  Sometimes loans
         //! are issued for future scopes and thus they may have been
         //! *issued* but not yet be in effect.
 
-        self.dfcx_loans.each_bit_on_entry(scope.node_id(), |loan_index| {
+        self.dfcx_loans.each_bit_on_entry(node, |loan_index| {
             let loan = &self.all_loans[loan_index];
             op(loan)
         })
@@ -251,7 +254,7 @@ impl<'a, 'tcx> CheckLoanCtxt<'a, 'tcx> {
         //! currently in scope.
 
         let tcx = self.tcx();
-        self.each_issued_loan(scope, |loan| {
+        self.each_issued_loan(scope.node_id(&tcx.region_maps), |loan| {
             if tcx.region_maps.is_subscope_of(scope, loan.kill_scope) {
                 op(loan)
             } else {
@@ -335,39 +338,40 @@ impl<'a, 'tcx> CheckLoanCtxt<'a, 'tcx> {
         return true;
     }
 
-    pub fn loans_generated_by(&self, scope: region::CodeExtent) -> Vec<usize> {
+    pub fn loans_generated_by(&self, node: ast::NodeId) -> Vec<usize> {
         //! Returns a vector of the loans that are generated as
-        //! we enter `scope`.
+        //! we enter `node`.
 
         let mut result = Vec::new();
-        self.dfcx_loans.each_gen_bit(scope.node_id(), |loan_index| {
+        self.dfcx_loans.each_gen_bit(node, |loan_index| {
             result.push(loan_index);
             true
         });
         return result;
     }
 
-    pub fn check_for_conflicting_loans(&self, scope: region::CodeExtent) {
+    pub fn check_for_conflicting_loans(&self, node: ast::NodeId) {
         //! Checks to see whether any of the loans that are issued
-        //! on entrance to `scope` conflict with loans that have already been
-        //! issued when we enter `scope` (for example, we do not
+        //! on entrance to `node` conflict with loans that have already been
+        //! issued when we enter `node` (for example, we do not
         //! permit two `&mut` borrows of the same variable).
         //!
         //! (Note that some loans can be *issued* without necessarily
         //! taking effect yet.)
 
-        debug!("check_for_conflicting_loans(scope={:?})", scope);
+        debug!("check_for_conflicting_loans(node={:?})", node);
 
-        let new_loan_indices = self.loans_generated_by(scope);
+        let new_loan_indices = self.loans_generated_by(node);
         debug!("new_loan_indices = {:?}", new_loan_indices);
 
-        self.each_issued_loan(scope, |issued_loan| {
-            for &new_loan_index in &new_loan_indices {
+        for &new_loan_index in &new_loan_indices {
+            self.each_issued_loan(node, |issued_loan| {
                 let new_loan = &self.all_loans[new_loan_index];
-                self.report_error_if_loans_conflict(issued_loan, new_loan);
-            }
-            true
-        });
+                // Only report an error for the first issued loan that conflicts
+                // to avoid O(n^2) errors.
+                self.report_error_if_loans_conflict(issued_loan, new_loan)
+            });
+        }
 
         for (i, &x) in new_loan_indices.iter().enumerate() {
             let old_loan = &self.all_loans[x];
@@ -380,13 +384,14 @@ impl<'a, 'tcx> CheckLoanCtxt<'a, 'tcx> {
 
     pub fn report_error_if_loans_conflict(&self,
                                           old_loan: &Loan<'tcx>,
-                                          new_loan: &Loan<'tcx>) {
+                                          new_loan: &Loan<'tcx>)
+                                          -> bool {
         //! Checks whether `old_loan` and `new_loan` can safely be issued
         //! simultaneously.
 
-        debug!("report_error_if_loans_conflict(old_loan={}, new_loan={})",
-               old_loan.repr(self.tcx()),
-               new_loan.repr(self.tcx()));
+        debug!("report_error_if_loans_conflict(old_loan={:?}, new_loan={:?})",
+               old_loan,
+               new_loan);
 
         // Should only be called for loans that are in scope at the same time.
         assert!(self.tcx().region_maps.scopes_intersect(old_loan.kill_scope,
@@ -395,7 +400,7 @@ impl<'a, 'tcx> CheckLoanCtxt<'a, 'tcx> {
         self.report_error_if_loan_conflicts_with_restriction(
             old_loan, new_loan, old_loan, new_loan) &&
         self.report_error_if_loan_conflicts_with_restriction(
-            new_loan, old_loan, old_loan, new_loan);
+            new_loan, old_loan, old_loan, new_loan)
     }
 
     pub fn report_error_if_loan_conflicts_with_restriction(&self,
@@ -408,9 +413,9 @@ impl<'a, 'tcx> CheckLoanCtxt<'a, 'tcx> {
         //! prohibit `loan2`. Returns false if an error is reported.
 
         debug!("report_error_if_loan_conflicts_with_restriction(\
-                loan1={}, loan2={})",
-               loan1.repr(self.tcx()),
-               loan2.repr(self.tcx()));
+                loan1={:?}, loan2={:?})",
+               loan1,
+               loan2);
 
         if compatible_borrow_kinds(loan1.kind, loan2.kind) {
             return true;
@@ -462,40 +467,36 @@ impl<'a, 'tcx> CheckLoanCtxt<'a, 'tcx> {
 
             match (new_loan.kind, old_loan.kind) {
                 (ty::MutBorrow, ty::MutBorrow) => {
-                    self.bccx.span_err(
-                        new_loan.span,
-                        &format!("cannot borrow `{}`{} as mutable \
-                                more than once at a time",
-                                nl, new_loan_msg))
+                    span_err!(self.bccx, new_loan.span, E0499,
+                              "cannot borrow `{}`{} as mutable \
+                               more than once at a time",
+                              nl, new_loan_msg);
                 }
 
                 (ty::UniqueImmBorrow, _) => {
-                    self.bccx.span_err(
-                        new_loan.span,
-                        &format!("closure requires unique access to `{}` \
-                                but {} is already borrowed{}",
-                                nl, ol_pronoun, old_loan_msg));
+                    span_err!(self.bccx, new_loan.span, E0500,
+                              "closure requires unique access to `{}` \
+                               but {} is already borrowed{}",
+                              nl, ol_pronoun, old_loan_msg);
                 }
 
                 (_, ty::UniqueImmBorrow) => {
-                    self.bccx.span_err(
-                        new_loan.span,
-                        &format!("cannot borrow `{}`{} as {} because \
-                                previous closure requires unique access",
-                                nl, new_loan_msg, new_loan.kind.to_user_str()));
+                    span_err!(self.bccx, new_loan.span, E0501,
+                              "cannot borrow `{}`{} as {} because \
+                               previous closure requires unique access",
+                              nl, new_loan_msg, new_loan.kind.to_user_str());
                 }
 
                 (_, _) => {
-                    self.bccx.span_err(
-                        new_loan.span,
-                        &format!("cannot borrow `{}`{} as {} because \
-                                {} is also borrowed as {}{}",
-                                nl,
-                                new_loan_msg,
-                                new_loan.kind.to_user_str(),
-                                ol_pronoun,
-                                old_loan.kind.to_user_str(),
-                                old_loan_msg));
+                    span_err!(self.bccx, new_loan.span, E0502,
+                              "cannot borrow `{}`{} as {} because \
+                               {} is also borrowed as {}{}",
+                              nl,
+                              new_loan_msg,
+                              new_loan.kind.to_user_str(),
+                              ol_pronoun,
+                              old_loan.kind.to_user_str(),
+                              old_loan_msg);
                 }
             }
 
@@ -556,7 +557,8 @@ impl<'a, 'tcx> CheckLoanCtxt<'a, 'tcx> {
                 old_loan.span,
                 &format!("{}; {}", borrow_summary, rule_summary));
 
-            let old_loan_span = self.tcx().map.span(old_loan.kill_scope.node_id());
+            let old_loan_span = self.tcx().map.span(
+                old_loan.kill_scope.node_id(&self.tcx().region_maps));
             self.bccx.span_end_note(old_loan_span,
                                     "previous borrow ends here");
 
@@ -564,13 +566,6 @@ impl<'a, 'tcx> CheckLoanCtxt<'a, 'tcx> {
         }
 
         true
-    }
-
-    fn is_local_variable_or_arg(&self, cmt: mc::cmt<'tcx>) -> bool {
-        match cmt.cat {
-          mc::cat_local(_) => true,
-          _ => false
-        }
     }
 
     fn consume_common(&self,
@@ -621,11 +616,9 @@ impl<'a, 'tcx> CheckLoanCtxt<'a, 'tcx> {
         match self.analyze_restrictions_on_use(id, copy_path, ty::ImmBorrow) {
             UseOk => { }
             UseWhileBorrowed(loan_path, loan_span) => {
-                self.bccx.span_err(
-                    span,
-                    &format!("cannot use `{}` because it was mutably borrowed",
-                            &self.bccx.loan_path_to_string(copy_path))
-                    );
+                span_err!(self.bccx, span, E0503,
+                          "cannot use `{}` because it was mutably borrowed",
+                          &self.bccx.loan_path_to_string(copy_path));
                 self.bccx.span_note(
                     loan_span,
                     &format!("borrow of `{}` occurs here",
@@ -646,18 +639,19 @@ impl<'a, 'tcx> CheckLoanCtxt<'a, 'tcx> {
         match self.analyze_restrictions_on_use(id, move_path, ty::MutBorrow) {
             UseOk => { }
             UseWhileBorrowed(loan_path, loan_span) => {
-                let err_message = match move_kind {
+                match move_kind {
                     move_data::Captured =>
-                        format!("cannot move `{}` into closure because it is borrowed",
-                                &self.bccx.loan_path_to_string(move_path)),
+                        span_err!(self.bccx, span, E0504,
+                                  "cannot move `{}` into closure because it is borrowed",
+                                  &self.bccx.loan_path_to_string(move_path)),
                     move_data::Declared |
                     move_data::MoveExpr |
                     move_data::MovePat =>
-                        format!("cannot move out of `{}` because it is borrowed",
-                                &self.bccx.loan_path_to_string(move_path))
+                        span_err!(self.bccx, span, E0505,
+                                  "cannot move out of `{}` because it is borrowed",
+                                  &self.bccx.loan_path_to_string(move_path))
                 };
 
-                self.bccx.span_err(span, &err_message[..]);
                 self.bccx.span_note(
                     loan_span,
                     &format!("borrow of `{}` occurs here",
@@ -672,14 +666,14 @@ impl<'a, 'tcx> CheckLoanCtxt<'a, 'tcx> {
                                        use_path: &LoanPath<'tcx>,
                                        borrow_kind: ty::BorrowKind)
                                        -> UseError<'tcx> {
-        debug!("analyze_restrictions_on_use(expr_id={}, use_path={})",
+        debug!("analyze_restrictions_on_use(expr_id={}, use_path={:?})",
                self.tcx().map.node_to_string(expr_id),
-               use_path.repr(self.tcx()));
+               use_path);
 
         let mut ret = UseOk;
 
         self.each_in_scope_loan_affecting_path(
-            region::CodeExtent::from_node_id(expr_id), use_path, |loan| {
+            self.tcx().region_maps.node_extent(expr_id), use_path, |loan| {
             if !compatible_borrow_kinds(loan.kind, borrow_kind) {
                 ret = UseWhileBorrowed(loan.loan_path.clone(), loan.span);
                 false
@@ -698,8 +692,8 @@ impl<'a, 'tcx> CheckLoanCtxt<'a, 'tcx> {
                               span: Span,
                               use_kind: MovedValueUseKind,
                               lp: &Rc<LoanPath<'tcx>>) {
-        debug!("check_if_path_is_moved(id={}, use_kind={:?}, lp={})",
-               id, use_kind, lp.repr(self.bccx.tcx));
+        debug!("check_if_path_is_moved(id={}, use_kind={:?}, lp={:?})",
+               id, use_kind, lp);
 
         // FIXME (22079): if you find yourself tempted to cut and paste
         // the body below and then specializing the error reporting,
@@ -752,24 +746,22 @@ impl<'a, 'tcx> CheckLoanCtxt<'a, 'tcx> {
             }
             LpExtend(ref lp_base, _, LpInterior(InteriorField(_))) => {
                 match lp_base.to_type().sty {
-                    ty::ty_struct(def_id, _) | ty::ty_enum(def_id, _) => {
-                        if ty::has_dtor(self.tcx(), def_id) {
-                            // In the case where the owner implements drop, then
-                            // the path must be initialized to prevent a case of
-                            // partial reinitialization
-                            //
-                            // FIXME (22079): could refactor via hypothetical
-                            // generalized check_if_path_is_moved
-                            let loan_path = owned_ptr_base_path_rc(lp_base);
-                            self.move_data.each_move_of(id, &loan_path, |_, _| {
-                                self.bccx
-                                    .report_partial_reinitialization_of_uninitialized_structure(
-                                        span,
-                                        &*loan_path);
-                                false
-                            });
-                            return;
-                        }
+                    ty::TyStruct(def, _) | ty::TyEnum(def, _) if def.has_dtor() => {
+                        // In the case where the owner implements drop, then
+                        // the path must be initialized to prevent a case of
+                        // partial reinitialization
+                        //
+                        // FIXME (22079): could refactor via hypothetical
+                        // generalized check_if_path_is_moved
+                        let loan_path = owned_ptr_base_path_rc(lp_base);
+                        self.move_data.each_move_of(id, &loan_path, |_, _| {
+                            self.bccx
+                                .report_partial_reinitialization_of_uninitialized_structure(
+                                    span,
+                                    &*loan_path);
+                            false
+                        });
+                        return;
                     },
                     _ => {},
                 }
@@ -790,202 +782,35 @@ impl<'a, 'tcx> CheckLoanCtxt<'a, 'tcx> {
     fn check_assignment(&self,
                         assignment_id: ast::NodeId,
                         assignment_span: Span,
-                        assignee_cmt: mc::cmt<'tcx>,
-                        mode: euv::MutateMode) {
-        debug!("check_assignment(assignee_cmt={})", assignee_cmt.repr(self.tcx()));
+                        assignee_cmt: mc::cmt<'tcx>) {
+        debug!("check_assignment(assignee_cmt={:?})", assignee_cmt);
 
-        // Mutable values can be assigned, as long as they obey loans
-        // and aliasing restrictions:
-        if assignee_cmt.mutbl.is_mutable() {
-            if check_for_aliasable_mutable_writes(self, assignment_span, assignee_cmt.clone()) {
-                if mode != euv::Init {
-                    check_for_assignment_to_borrowed_path(
-                        self, assignment_id, assignment_span, assignee_cmt.clone());
-                    mark_variable_as_used_mut(self, assignee_cmt);
-                }
-            }
-
-            return;
+        // Check that we don't invalidate any outstanding loans
+        if let Some(loan_path) = opt_loan_path(&assignee_cmt) {
+            let scope = self.tcx().region_maps.node_extent(assignment_id);
+            self.each_in_scope_loan_affecting_path(scope, &*loan_path, |loan| {
+                self.report_illegal_mutation(assignment_span, &*loan_path, loan);
+                false
+            });
         }
 
-        // Initializations are OK if and only if they aren't partial
-        // reinitialization of a partially-uninitialized structure.
-        if mode == euv::Init {
-            return
-        }
-
-        // For immutable local variables, assignments are legal
-        // if they cannot already have been assigned
-        if self.is_local_variable_or_arg(assignee_cmt.clone()) {
-            assert!(assignee_cmt.mutbl.is_immutable()); // no "const" locals
+        // Check for reassignments to (immutable) local variables. This
+        // needs to be done here instead of in check_loans because we
+        // depend on move data.
+        if let Categorization::Local(local_id) = assignee_cmt.cat {
             let lp = opt_loan_path(&assignee_cmt).unwrap();
             self.move_data.each_assignment_of(assignment_id, &lp, |assign| {
-                self.bccx.report_reassigned_immutable_variable(
-                    assignment_span,
-                    &*lp,
-                    assign);
-                false
-            });
-            return;
-        }
-
-        // Otherwise, just a plain error.
-        match assignee_cmt.note {
-            mc::NoteClosureEnv(upvar_id) => {
-                // If this is an `Fn` closure, it simply can't mutate upvars.
-                // If it's an `FnMut` closure, the original variable was declared immutable.
-                // We need to determine which is the case here.
-                let kind = match assignee_cmt.upvar().unwrap().cat {
-                    mc::cat_upvar(mc::Upvar { kind, .. }) => kind,
-                    _ => unreachable!()
-                };
-                if kind == ty::FnClosureKind {
-                    self.bccx.span_err(
-                        assignment_span,
-                        &format!("cannot assign to {}",
-                                self.bccx.cmt_to_string(&*assignee_cmt)));
-                    self.bccx.span_help(
-                        self.tcx().map.span(upvar_id.closure_expr_id),
-                        "consider changing this closure to take self by mutable reference");
+                if assignee_cmt.mutbl.is_mutable() {
+                    self.tcx().used_mut_nodes.borrow_mut().insert(local_id);
                 } else {
-                    self.bccx.span_err(
+                    self.bccx.report_reassigned_immutable_variable(
                         assignment_span,
-                        &format!("cannot assign to {} {}",
-                                assignee_cmt.mutbl.to_user_str(),
-                                self.bccx.cmt_to_string(&*assignee_cmt)));
+                        &*lp,
+                        assign);
                 }
-            }
-            _ => match opt_loan_path(&assignee_cmt) {
-                Some(lp) => {
-                    self.bccx.span_err(
-                        assignment_span,
-                        &format!("cannot assign to {} {} `{}`",
-                                assignee_cmt.mutbl.to_user_str(),
-                                self.bccx.cmt_to_string(&*assignee_cmt),
-                                self.bccx.loan_path_to_string(&*lp)));
-                }
-                None => {
-                    self.bccx.span_err(
-                        assignment_span,
-                        &format!("cannot assign to {} {}",
-                                assignee_cmt.mutbl.to_user_str(),
-                                self.bccx.cmt_to_string(&*assignee_cmt)));
-                }
-            }
-        }
-        return;
-
-        fn mark_variable_as_used_mut<'a, 'tcx>(this: &CheckLoanCtxt<'a, 'tcx>,
-                                               mut cmt: mc::cmt<'tcx>) {
-            //! If the mutability of the `cmt` being written is inherited
-            //! from a local variable, liveness will
-            //! not have been able to detect that this variable's mutability
-            //! is important, so we must add the variable to the
-            //! `used_mut_nodes` table here.
-
-            loop {
-                debug!("mark_variable_as_used_mut(cmt={})", cmt.repr(this.tcx()));
-                match cmt.cat.clone() {
-                    mc::cat_upvar(mc::Upvar { id: ty::UpvarId { var_id: id, .. }, .. }) |
-                    mc::cat_local(id) => {
-                        this.tcx().used_mut_nodes.borrow_mut().insert(id);
-                        return;
-                    }
-
-                    mc::cat_rvalue(..) |
-                    mc::cat_static_item |
-                    mc::cat_deref(_, _, mc::UnsafePtr(..)) |
-                    mc::cat_deref(_, _, mc::Implicit(..)) => {
-                        assert_eq!(cmt.mutbl, mc::McDeclared);
-                        return;
-                    }
-
-                    mc::cat_deref(_, _, mc::BorrowedPtr(..)) => {
-                        assert_eq!(cmt.mutbl, mc::McDeclared);
-                        // We need to drill down to upvar if applicable
-                        match cmt.upvar() {
-                            Some(b) => cmt = b,
-                            None => return
-                        }
-                    }
-
-                    mc::cat_deref(b, _, mc::Unique) => {
-                        assert_eq!(cmt.mutbl, mc::McInherited);
-                        cmt = b;
-                    }
-
-                    mc::cat_downcast(b, _) |
-                    mc::cat_interior(b, _) => {
-                        assert_eq!(cmt.mutbl, mc::McInherited);
-                        cmt = b;
-                    }
-                }
-            }
-        }
-
-        fn check_for_aliasable_mutable_writes<'a, 'tcx>(this: &CheckLoanCtxt<'a, 'tcx>,
-                                                        span: Span,
-                                                        cmt: mc::cmt<'tcx>) -> bool {
-            //! Safety checks related to writes to aliasable, mutable locations
-
-            let guarantor = cmt.guarantor();
-            debug!("check_for_aliasable_mutable_writes(cmt={}, guarantor={})",
-                   cmt.repr(this.tcx()), guarantor.repr(this.tcx()));
-            if let mc::cat_deref(ref b, _, mc::BorrowedPtr(ty::MutBorrow, _)) = guarantor.cat {
-                // Statically prohibit writes to `&mut` when aliasable
-                check_for_aliasability_violation(this, span, b.clone());
-            }
-
-            return true; // no errors reported
-        }
-
-        fn check_for_aliasability_violation<'a, 'tcx>(this: &CheckLoanCtxt<'a, 'tcx>,
-                                                      span: Span,
-                                                      cmt: mc::cmt<'tcx>)
-                                                      -> bool {
-            match cmt.freely_aliasable(this.tcx()) {
-                mc::Aliasability::NonAliasable => {
-                    return true;
-                }
-                mc::Aliasability::FreelyAliasable(mc::AliasableStaticMut(..)) => {
-                    return true;
-                }
-                mc::Aliasability::ImmutableUnique(_) => {
-                    this.bccx.report_aliasability_violation(
-                        span,
-                        MutabilityViolation,
-                        mc::AliasableReason::UnaliasableImmutable);
-                    return false;
-                }
-                mc::Aliasability::FreelyAliasable(cause) => {
-                    this.bccx.report_aliasability_violation(
-                        span,
-                        MutabilityViolation,
-                        cause);
-                    return false;
-                }
-            }
-        }
-
-        fn check_for_assignment_to_borrowed_path<'a, 'tcx>(
-            this: &CheckLoanCtxt<'a, 'tcx>,
-            assignment_id: ast::NodeId,
-            assignment_span: Span,
-            assignee_cmt: mc::cmt<'tcx>)
-        {
-            //! Check for assignments that violate the terms of an
-            //! outstanding loan.
-
-            let loan_path = match opt_loan_path(&assignee_cmt) {
-                Some(lp) => lp,
-                None => { return; /* no loan path, can't be any loans */ }
-            };
-
-            let scope = region::CodeExtent::from_node_id(assignment_id);
-            this.each_in_scope_loan_affecting_path(scope, &*loan_path, |loan| {
-                this.report_illegal_mutation(assignment_span, &*loan_path, loan);
                 false
             });
+            return
         }
     }
 
@@ -993,10 +818,9 @@ impl<'a, 'tcx> CheckLoanCtxt<'a, 'tcx> {
                                    span: Span,
                                    loan_path: &LoanPath<'tcx>,
                                    loan: &Loan) {
-        self.bccx.span_err(
-            span,
-            &format!("cannot assign to `{}` because it is borrowed",
-                    self.bccx.loan_path_to_string(loan_path)));
+        span_err!(self.bccx, span, E0506,
+                  "cannot assign to `{}` because it is borrowed",
+                  self.bccx.loan_path_to_string(loan_path));
         self.bccx.span_note(
             loan.span,
             &format!("borrow of `{}` occurs here",

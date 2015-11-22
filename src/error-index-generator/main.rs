@@ -17,6 +17,7 @@ extern crate serialize as rustc_serialize;
 use std::collections::BTreeMap;
 use std::fs::{read_dir, File};
 use std::io::{Read, Write};
+use std::env;
 use std::path::Path;
 use std::error::Error;
 
@@ -33,10 +34,7 @@ fn load_all_errors(metadata_dir: &Path) -> Result<ErrorMetadataMap, Box<Error>> 
         let path = try!(entry).path();
 
         let mut metadata_str = String::new();
-        try!(
-            File::open(&path).and_then(|mut f|
-            f.read_to_string(&mut metadata_str))
-        );
+        try!(File::open(&path).and_then(|mut f| f.read_to_string(&mut metadata_str)));
 
         let some_errors: ErrorMetadataMap = try!(json::decode(&metadata_str));
 
@@ -73,28 +71,27 @@ r##"<!DOCTYPE html>
 
     try!(write!(&mut output_file, "<h1>Rust Compiler Error Index</h1>\n"));
 
-    for (err_code, info) in err_map.iter() {
+    for (err_code, info) in err_map {
         // Enclose each error in a div so they can be shown/hidden en masse.
         let desc_desc = match info.description {
             Some(_) => "error-described",
-            None => "error-undescribed"
+            None => "error-undescribed",
         };
         let use_desc = match info.use_site {
             Some(_) => "error-used",
-            None => "error-unused"
+            None => "error-unused",
         };
         try!(write!(&mut output_file, "<div class=\"{} {}\">", desc_desc, use_desc));
 
         // Error title (with self-link).
         try!(write!(&mut output_file,
-            "<h2 id=\"{0}\" class=\"section-header\"><a href=\"#{0}\">{0}</a></h2>\n",
-            err_code
-        ));
+                    "<h2 id=\"{0}\" class=\"section-header\"><a href=\"#{0}\">{0}</a></h2>\n",
+                    err_code));
 
         // Description rendered as markdown.
         match info.description {
             Some(ref desc) => try!(write!(&mut output_file, "{}", Markdown(desc))),
-            None => try!(write!(&mut output_file, "<p>No description.</p>\n"))
+            None => try!(write!(&mut output_file, "<p>No description.</p>\n")),
         }
 
         try!(write!(&mut output_file, "</div>\n"));
@@ -106,7 +103,8 @@ r##"<!DOCTYPE html>
 }
 
 fn main_with_result() -> Result<(), Box<Error>> {
-    let metadata_dir = get_metadata_dir();
+    let build_arch = try!(env::var("CFG_BUILD"));
+    let metadata_dir = get_metadata_dir(&build_arch);
     let err_map = try!(load_all_errors(&metadata_dir));
     try!(render_error_page(&err_map, Path::new("doc/error-index.html")));
     Ok(())
